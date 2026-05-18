@@ -7,7 +7,9 @@ WebSocket protocol:
       "sampleRate": 16000,
       "sourceLang": "auto" | "en" | "es" | ...,
       "targetLang": "ar",
-      "task": "transcribe" | "translate" }
+      "task": "transcribe" | "translate",
+      "client": "android",
+      "token": "optional shared mobile token" }
   client -> server (binary): raw little-endian Int16 PCM, mono, sampleRate Hz
 
   server -> client (text JSON):
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import io
 import json
 import logging
@@ -29,6 +32,7 @@ import wave
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 # Make pip-installed NVIDIA libs discoverable by ctranslate2 on Windows.
 # Without this, faster-whisper crashes with "cublas64_12.dll not found"
@@ -98,12 +102,13 @@ def _register_nvidia_dll_dirs() -> None:
 _register_nvidia_dll_dirs()
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 
 from config import (
     MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR, TRANSCRIBER,
     OPENAI_TRANSCRIBE_MODEL, HOST, PORT, SAMPLE_RATE, REALTIME_SAMPLE_RATE,
-    VAD_FILTER, MAX_CHUNK_LAG_S,
+    VAD_FILTER, MAX_CHUNK_LAG_S, MOBILE_TOKEN,
 )
 
 log = logging.getLogger("sub-stream-ai")
@@ -127,6 +132,58 @@ ALLOWED_TARGET_LANGS = {
     "ar", "en", "es", "fr", "de", "tr", "ja", "ko", "zh", "hi",
     "it", "pt", "ru", "id", "ms", "th", "vi", "fil",
 }
+ALLOWED_SOURCE_LANGS = ALLOWED_TARGET_LANGS | {"auto"}
+MAX_TRANSLATE_CHARS = 2000
+
+
+class TranslateRequest(BaseModel):
+    text: str = Field(default="", max_length=MAX_TRANSLATE_CHARS)
+    sourceLang: str = "auto"
+    targetLang: str = "ar"
+    token: Optional[str] = None
+
+
+class TranslateResponse(BaseModel):
+    text: str
+
+
+def mobile_token_required() -> bool:
+    return bool(MOBILE_TOKEN.strip())
+
+
+def mobile_token_matches(value: str | None) -> bool:
+    if not mobile_token_required():
+        return True
+    return hmac.compare_digest((value or "").strip(), MOBILE_TOKEN.strip())
+
+
+def is_android_client(cfg: dict) -> bool:
+    return (cfg.get("client") or "").strip().lower() == "android"
+
+
+def validate_mobile_ws_config(cfg: dict) -> str | None:
+    if is_android_client(cfg) and not mobile_token_matches(cfg.get("token")):
+        return "Android client token is missing or invalid."
+    return None
+
+
+def require_mobile_token(token: str | None) -> None:
+    if not mobile_token_matches(token):
+        raise HTTPException(status_code=403, detail="Invalid mobile token.")
+
+
+def safe_source_lang_or_error(value: str | None) -> str:
+    lang = (value or "auto").strip().lower()
+    if lang not in ALLOWED_SOURCE_LANGS:
+        raise HTTPException(status_code=400, detail="Unsupported source language.")
+    return lang
+
+
+def safe_target_lang_or_error(value: str | None) -> str:
+    lang = (value or "ar").strip().lower()
+    if lang not in ALLOWED_TARGET_LANGS:
+        raise HTTPException(status_code=400, detail="Unsupported target language.")
+    return lang
 
 def resolve_compute_type(device: str, requested: str) -> str:
     if device != "cuda":
@@ -714,6 +771,11 @@ async def handle_socket(ws: WebSocket):
             try:
                 cfg = json.loads(first["text"])
                 if cfg.get("type") == "config":
+                    token_error = validate_mobile_ws_config(cfg)
+                    if token_error:
+                        await send_safe_error(ws, token_error)
+                        await ws.close(code=1008)
+                        return
                     apply_config(session, cfg)
                     log.info("config: rate=%s src=%s tgt=%s task=%s transcriber=%s",
                              session.sample_rate, session.source_lang,
@@ -752,6 +814,11 @@ async def handle_socket(ws: WebSocket):
                 try:
                     cfg = json.loads(msg["text"])
                     if cfg.get("type") == "config":
+                        token_error = validate_mobile_ws_config(cfg)
+                        if token_error:
+                            await send_safe_error(ws, token_error)
+                            await ws.close(code=1008)
+                            break
                         apply_config(session, cfg)
                     elif cfg.get("type") == "chunk":
                         try:
@@ -812,7 +879,19 @@ async def root():
         "openai_realtime_model": OPENAI_REALTIME_TRANSLATE_MODEL if TRANSCRIBER == REALTIME_TRANSCRIBER else None,
         "translator": TRANSLATOR,
         "ws": f"ws://{HOST}:{PORT}/ws",
+        "mobile_token_required": mobile_token_required(),
     }
+
+
+@app.post("/translate", response_model=TranslateResponse)
+async def translate_text(req: TranslateRequest):
+    require_mobile_token(req.token)
+    text = (req.text or "").strip()
+    if not text:
+        return TranslateResponse(text="")
+    src = safe_source_lang_or_error(req.sourceLang)
+    tgt = safe_target_lang_or_error(req.targetLang)
+    return TranslateResponse(text=translate(text[:MAX_TRANSLATE_CHARS], src, tgt))
 
 
 @app.websocket("/ws")

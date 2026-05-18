@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Sub Stream AI</string>
+    <string name="capture_channel_name">Sub Stream AI capture</string>
+    <string name="capture_notification">Listening for video audio</string>
+</resources>

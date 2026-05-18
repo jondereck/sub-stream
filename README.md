@@ -5,7 +5,7 @@
 Captures the audio of whatever's playing in your browser tab, streams it through the local backend, translates it in realtime with OpenAI Realtime Translation by default, and overlays the translated subtitles on the video. Local Whisper remains available as an offline fallback. Works on anything that isn't DRM-protected — YouTube, Twitch, podcasts, lectures, vimeo embeds, news streams.
 
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20%2B%20Android-lightgrey.svg)
 ![Manifest](https://img.shields.io/badge/Chrome-MV3-orange.svg)
 
 ---
@@ -84,6 +84,12 @@ That writes `extension\native\com.kamisubs.host.json` and registers it under `HK
 
 To remove, run `uninstall.ps1` from the same folder.
 
+### 4. Android app preview
+
+The phone build lives in `android/` and is a separate native Android app. It uses `MediaProjection` + `AudioPlaybackCapture` for app audio, a foreground service for capture, and a floating overlay for subtitles.
+
+Cloud mode connects to the same backend at `ws://<pc-lan-ip>:8765/ws`. Local mode uses `whisper.cpp` on-device with `tiny` by default and `base` as the higher-quality option. See [`android/README.md`](android/README.md) for setup and Android-specific limitations.
+
 ---
 
 ## Use
@@ -129,6 +135,7 @@ Set these before running `server.py` manually if you want to override defaults. 
 | `KAMI_PORT` | `8765` | bind port |
 | `KAMI_VAD` | `true` | Enable Silero VAD pre-filtering |
 | `KAMI_MAX_LAG_S` | `2.0` | Drop stale chunked subtitles when processing falls behind |
+| `SUBSTREAM_MOBILE_TOKEN` | empty | Optional shared token for Android WebSocket config and `/translate` |
 
 ---
 

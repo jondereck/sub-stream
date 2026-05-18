@@ -9,6 +9,13 @@ extension/icons/*.png
 !extension/icons/.gitkeep
 backend/models/
 
+# Android local build output and downloaded whisper.cpp models
+android/.gradle/
+android/**/build/
+android/local.properties
+android/app/src/main/assets/models/*.bin
+!android/app/src/main/assets/models/.gitkeep
+
 # Native Messaging host: secrets + machine-specific generated files
 extension/native/.private_key.pem
 extension/native/com.kamisubs.host.json

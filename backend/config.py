@@ -59,3 +59,6 @@ VAD_FILTER = os.getenv("KAMI_VAD", "true").lower() in ("1", "true", "yes")
 # discard stale chunks so the user always sees what's *currently* playing
 # instead of subs from 30 seconds ago.
 MAX_CHUNK_LAG_S = float(os.getenv("KAMI_MAX_LAG_S", "2.0"))
+
+# Optional shared token for Android clients. Leave empty for local/dev use.
+MOBILE_TOKEN = os.getenv("SUBSTREAM_MOBILE_TOKEN", "")
