@@ -4,6 +4,8 @@
 
 const OFFSCREEN_DOC = 'offscreen.html';
 const NATIVE_HOST   = 'com.kamisubs.host';
+const AI_USAGE_KEY = 'aiUsageEstimate';
+const REALTIME_TRANSLATE_USD_PER_MIN = 0.034;
 
 let activeTabId = null;
 let isCapturing = false;
@@ -11,6 +13,92 @@ let wsState = 'idle';           // idle | connecting | connected | error | close
 let backendState = 'unknown';   // unknown | starting | up | down | unavailable
 let backendInfo = {};           // { pid?, wsUrl?, lastError? }
 let nativePort = null;          // chrome.runtime.Port to native host, or null
+
+function todayKey() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function emptyUsage() {
+  return {
+    today: todayKey(),
+    todayMs: 0,
+    totalMs: 0,
+    currentStartedAt: null,
+    usdPerMinute: REALTIME_TRANSLATE_USD_PER_MIN,
+  };
+}
+
+async function readUsage() {
+  const stored = await chrome.storage.local.get(AI_USAGE_KEY);
+  const usage = { ...emptyUsage(), ...(stored[AI_USAGE_KEY] || {}) };
+  if (usage.today !== todayKey()) {
+    usage.today = todayKey();
+    usage.todayMs = 0;
+  }
+  usage.usdPerMinute = REALTIME_TRANSLATE_USD_PER_MIN;
+  return usage;
+}
+
+function usageSnapshot(usage) {
+  const now = Date.now();
+  const currentMs = usage.currentStartedAt ? Math.max(0, now - usage.currentStartedAt) : 0;
+  const todayMs = usage.todayMs + currentMs;
+  const totalMs = usage.totalMs + currentMs;
+  const msToCost = (ms) => (ms / 60000) * REALTIME_TRANSLATE_USD_PER_MIN;
+  return {
+    isTracking: !!usage.currentStartedAt,
+    currentMs,
+    todayMs,
+    totalMs,
+    currentCostUsd: msToCost(currentMs),
+    todayCostUsd: msToCost(todayMs),
+    totalCostUsd: msToCost(totalMs),
+    usdPerMinute: REALTIME_TRANSLATE_USD_PER_MIN,
+  };
+}
+
+async function writeUsage(usage) {
+  await chrome.storage.local.set({ [AI_USAGE_KEY]: usage });
+}
+
+async function startAiUsage(settings) {
+  if ((settings && settings.transcriber) !== 'openai-realtime') {
+    await stopAiUsage();
+    return;
+  }
+  const usage = await readUsage();
+  if (!usage.currentStartedAt) {
+    usage.currentStartedAt = Date.now();
+    await writeUsage(usage);
+  }
+}
+
+async function stopAiUsage() {
+  const usage = await readUsage();
+  if (!usage.currentStartedAt) return;
+  const elapsedMs = Math.max(0, Date.now() - usage.currentStartedAt);
+  usage.todayMs += elapsedMs;
+  usage.totalMs += elapsedMs;
+  usage.currentStartedAt = null;
+  await writeUsage(usage);
+}
+
+async function resetAiUsage() {
+  const usage = await readUsage();
+  const next = emptyUsage();
+  if (usage.currentStartedAt) {
+    next.currentStartedAt = Date.now();
+  }
+  await writeUsage(next);
+}
+
+async function getAiUsageSnapshot() {
+  return usageSnapshot(await readUsage());
+}
 
 async function hasOffscreenDocument() {
   if (chrome.runtime.getContexts) {
@@ -205,6 +293,7 @@ async function startCapture(tabId, settings) {
   isCapturing = true;
   wsState = 'connecting';
   await chrome.storage.local.set({ isCapturing: true, activeTabId: tabId });
+  await startAiUsage(settings);
 
   // Tell the content script in that tab to mount the overlay
   try {
@@ -215,6 +304,7 @@ async function startCapture(tabId, settings) {
 }
 
 async function stopCapture() {
+  await stopAiUsage();
   if (await hasOffscreenDocument()) {
     await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop' });
   }
@@ -253,7 +343,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'capture:status': {
-          sendResponse({ isCapturing, activeTabId, wsState, backendState, backendInfo });
+          sendResponse({
+            isCapturing,
+            activeTabId,
+            wsState,
+            backendState,
+            backendInfo,
+            aiUsage: await getAiUsageSnapshot()
+          });
+          break;
+        }
+        case 'aiUsage:reset': {
+          await resetAiUsage();
+          sendResponse({ ok: true, aiUsage: await getAiUsageSnapshot() });
           break;
         }
         case 'capture:updateSettings': {

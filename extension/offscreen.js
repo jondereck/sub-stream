@@ -21,7 +21,7 @@ const MAX_AUDIO_DELAY_MS = 8000;
 const LOCAL_SAMPLE_RATE = 16000;
 const REALTIME_SAMPLE_RATE = 24000;
 const LOCAL_CHUNK_SECONDS = 1.5;
-const REALTIME_FRAME_SECONDS = 0.1;
+const REALTIME_FRAME_SECONDS = 0.05;
 let chunkBuffer = new Float32Array(0);
 let chunkSeq = 0;
 
@@ -216,7 +216,7 @@ async function start(streamId, incomingSettings) {
   // Mono mixdown + buffer for realtime streaming or chunked send.
   // ScriptProcessorNode is deprecated but works reliably in offscreen contexts
   // without requiring an extra worklet file. Swap to AudioWorklet later if needed.
-  processorNode = audioContext.createScriptProcessor(2048, 2, 1);
+  processorNode = audioContext.createScriptProcessor(1024, 2, 1);
   processorNode.onaudioprocess = (e) => {
     const inBuf = e.inputBuffer;
     const ch0 = inBuf.getChannelData(0);

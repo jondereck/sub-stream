@@ -6,6 +6,11 @@ const els = {
   toggle: $('toggle'),
   status: $('status'),
   backendStatus: $('backendStatus'),
+  usageSession: $('usageSession'),
+  usageToday: $('usageToday'),
+  usageTotal: $('usageTotal'),
+  usageMeta: $('usageMeta'),
+  resetUsage: $('resetUsage'),
   sourceLang: $('sourceLang'),
   targetLang: $('targetLang'),
   fontSize: $('fontSize'),
@@ -39,6 +44,24 @@ function computeFor(device) { return device === 'cuda' ? 'float16' : 'int8'; }
 
 function formatDelay(ms) {
   return (Math.max(0, parseInt(ms, 10) || 0) / 1000).toFixed(1);
+}
+
+function formatCost(value) {
+  return '$' + (Number(value) || 0).toFixed(2);
+}
+
+function formatMinutes(ms) {
+  return ((Number(ms) || 0) / 60000).toFixed(1);
+}
+
+function updateUsage(usage) {
+  if (!usage) return;
+  els.usageSession.textContent = formatCost(usage.currentCostUsd);
+  els.usageToday.textContent = formatCost(usage.todayCostUsd);
+  els.usageTotal.textContent = formatCost(usage.totalCostUsd);
+  const rate = formatCost(usage.usdPerMinute);
+  const todayMin = formatMinutes(usage.todayMs);
+  els.usageMeta.textContent = `${todayMin} min today at ${rate}/min estimate`;
 }
 
 async function loadSettings() {
@@ -119,6 +142,7 @@ async function refresh() {
   const res = await chrome.runtime.sendMessage({ target: 'background', type: 'capture:status' });
   if (!res) return;
   setBackendStatus(res.backendState, res.backendInfo);
+  updateUsage(res.aiUsage);
   if (res.isCapturing) {
     els.toggle.textContent = 'Stop';
     els.toggle.classList.add('stop');
@@ -170,5 +194,9 @@ els.audioDelay.addEventListener('input', () => {
   els[k].addEventListener('change', saveAndBroadcastSettings);
 });
 els.toggle.addEventListener('click', onToggle);
+els.resetUsage.addEventListener('click', async () => {
+  const res = await chrome.runtime.sendMessage({ target: 'background', type: 'aiUsage:reset' });
+  if (res && res.aiUsage) updateUsage(res.aiUsage);
+});
 
 loadSettings().then(refresh);

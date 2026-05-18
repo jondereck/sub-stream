@@ -119,8 +119,8 @@ OPENAI_REALTIME_TRANSLATE_URL = (
     f"?model={OPENAI_REALTIME_TRANSLATE_MODEL}"
 )
 REALTIME_TRANSCRIBER = "openai-realtime"
-REALTIME_PHRASE_CHARS = 90
-REALTIME_PHRASE_IDLE_S = 1.3
+REALTIME_PHRASE_CHARS = 72
+REALTIME_PHRASE_IDLE_S = 0.75
 ALLOWED_TRANSCRIBERS = {"local", "openai", REALTIME_TRANSCRIBER}
 ALLOWED_TARGET_LANGS = {
     "ar", "en", "es", "fr", "de", "tr", "ja", "ko", "zh", "hi",
@@ -432,30 +432,6 @@ def realtime_caption_window(text: str) -> str:
     output = state.append(text)
     return output[-1][0] if output else ""
 
-    caption = re.sub(r"\s+", " ", text or "").strip()
-    if not caption:
-        return ""
-
-    if len(caption) <= REALTIME_PHRASE_CHARS:
-        return caption
-
-    sentence_boundaries = list(re.finditer(r"[.!?。！？؟]+(?:\s+|$)", caption))
-    for index, boundary in enumerate(sentence_boundaries):
-        tail = caption[boundary.end():].lstrip()
-        if len(tail) <= REALTIME_PHRASE_CHARS:
-            if len(tail) >= int(REALTIME_PHRASE_CHARS * 0.35) or index == 0:
-                return tail
-            if index > 0:
-                return caption[sentence_boundaries[index - 1].end():].lstrip()
-
-    start = max(0, len(caption) - REALTIME_PHRASE_CHARS)
-    for pattern in (r"[.!?。！？؟]\s+", r"[,;:،؛]\s+", r"\s+"):
-        matches = list(re.finditer(pattern, caption[:start + 40]))
-        useful = [m for m in matches if m.end() >= start - 40]
-        if useful:
-            return caption[useful[-1].end():].lstrip()
-
-    return caption[-REALTIME_PHRASE_CHARS:].lstrip()
 
 
 class RealtimeCaptionState:

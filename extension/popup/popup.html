@@ -16,6 +16,28 @@
       <div id="status" class="status idle">Idle</div>
       <div id="backendStatus" class="backend-status idle">Backend: unknown</div>
 
+      <section class="usage-panel">
+        <div class="usage-head">
+          <span>AI spend estimate</span>
+          <button id="resetUsage" type="button">Reset</button>
+        </div>
+        <div class="usage-grid">
+          <div>
+            <span>Session</span>
+            <strong id="usageSession">$0.00</strong>
+          </div>
+          <div>
+            <span>Today</span>
+            <strong id="usageToday">$0.00</strong>
+          </div>
+          <div>
+            <span>Total</span>
+            <strong id="usageTotal">$0.00</strong>
+          </div>
+        </div>
+        <p id="usageMeta" class="usage-meta">Realtime Cloud only</p>
+      </section>
+
       <section class="settings">
         <label>
           Source language
