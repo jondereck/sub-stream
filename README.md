@@ -1,8 +1,8 @@
 # Kami Subs ✨
 
-> Live AI-generated subtitles, overlaid on any browser video, translated into any language — running locally on your machine.
+> Live AI-generated subtitles, overlaid on any browser video, translated into any language — with a local backend and realtime cloud translation by default.
 
-Captures the audio of whatever's playing in your browser tab, transcribes it with [faster-whisper](https://github.com/SYSTRAN/faster-whisper), translates the output, and overlays it on the video. No cloud, no API keys, no per-minute fees. Works on anything that isn't DRM-protected — YouTube, Twitch, podcasts, lectures, vimeo embeds, news streams.
+Captures the audio of whatever's playing in your browser tab, streams it through the local backend, translates it in realtime with OpenAI Realtime Translation by default, and overlays the translated subtitles on the video. Local Whisper remains available as an offline fallback. Works on anything that isn't DRM-protected — YouTube, Twitch, podcasts, lectures, vimeo embeds, news streams.
 
 ![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
@@ -41,7 +41,8 @@ The backend stays on your machine. The extension talks to it over `ws://127.0.0.
 - **OS:** Windows 10/11 (Linux/macOS support hasn't been written — see [Contributing](#contributing))
 - **Chrome or Edge** (Chromium ≥ 116)
 - **Python 3.10+** on PATH
-- **GPU strongly recommended** for real-time performance — an NVIDIA card with CUDA 12 + cuDNN 9 gets you sub-second latency. CPU works but introduces 3-5s delay with the `small` model.
+- **OpenAI API key** for the default Realtime Cloud engine. Local Whisper can run without an API key.
+- **GPU recommended for Local Whisper** — an NVIDIA card with CUDA 12 + cuDNN 9 reduces fallback latency. CPU works but can introduce 3-5s delay with the `small` model.
 - ~500 MB disk for the `small` Whisper model (downloaded on first run). Larger models up to ~3 GB.
 
 ---
@@ -59,7 +60,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-First Whisper run downloads model weights into your local cache.
+First Whisper run downloads model weights into your local cache. Realtime Cloud mode uses `OPENAI_API_KEY` from `.env` or `backend/.env`.
 
 ### 2. Load the extension
 
@@ -103,8 +104,9 @@ To remove, run `uninstall.ps1` from the same folder.
 |---|---|---|
 | Source language | Auto detect | Set explicitly to skip Whisper's lang detection |
 | Target language | Arabic | Translation target |
-| Whisper model | small | `tiny` for speed, `large-v3` for quality (GPU only realistically) |
-| Device | GPU (CUDA) | `cpu` if you don't have an NVIDIA GPU |
+| Transcription engine | Realtime Cloud (OpenAI) | Local Whisper and chunked OpenAI fallback remain available |
+| Whisper model | small | Used only by Local Whisper |
+| Device | GPU (CUDA) | Used only by Local Whisper |
 | Font size | 28px | Slider 14–56 |
 | Position | Bottom | Bottom / Top |
 | Backend URL | `ws://127.0.0.1:8765/ws` | Change if running the backend remotely |
@@ -117,6 +119,7 @@ Set these before running `server.py` manually if you want to override defaults. 
 
 | Var | Default | Options |
 |---|---|---|
+| `KAMI_TRANSCRIBER` | `openai-realtime` | `openai-realtime`, `local`, `openai` |
 | `KAMI_MODEL` | `small` | `tiny`, `base`, `small`, `medium`, `large-v3` |
 | `KAMI_DEVICE` | `cpu` | `cpu`, `cuda` |
 | `KAMI_COMPUTE` | `int8` | `int8` (CPU), `float16` (GPU), `int8_float16` (low VRAM GPU) |
@@ -136,7 +139,7 @@ The Native Messaging host isn't registered. Re-run `extension\native\install.ps1
 The CUDA DLLs need to be in a directory Python can find. The backend tries to locate them automatically inside `.venv/Lib/site-packages/nvidia/*/bin` (installed as part of `nvidia-cublas-cu12` / `nvidia-cudnn-cu12`). If you installed faster-whisper without those pip packages, install them: `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`.
 
 **Subtitles are delayed and getting further behind real-time**
-Your model is bigger than your hardware can handle in real-time. Either pick a smaller model in the popup, or switch to GPU device. End-to-end latency on CPU with `small` is ~3-5s and grows under dense speech.
+Use `Realtime Cloud (OpenAI)` for the lowest latency. In Local Whisper mode, your model may be bigger than your hardware can handle in real-time; pick a smaller model or switch to GPU device.
 
 **Subtitles repeat the last word over and over when the video pauses**
 Should be fixed in current version (silence gate). If it returns, check that `backend/server.py` has the `SILENCE_RMS` constant and the `_handle_chunk` helper.
@@ -154,7 +157,8 @@ The host JSON has `allowed_origins` baked in for extension ID `cbahglicegngghebk
 
 - **Windows only** for the auto-start launcher. The extension + backend work cross-platform, but the Native Messaging install script is PowerShell + Windows registry. Linux/macOS users can run the backend manually.
 - **DRM sites are silent** — fundamental tab capture limitation, not solvable from this extension.
-- **Google Translate rate-limits** — the free `deep-translator` endpoint will throttle if you burn through a lot of long videos. Argos Translate (fully offline) is on the roadmap.
+- **Realtime Cloud uses OpenAI API minutes** — Local Whisper remains available if you need offline/no-cloud operation.
+- **Google Translate rate-limits in chunked fallback modes** — the free `deep-translator` endpoint will throttle if you burn through a lot of long videos. Argos Translate (fully offline) is on the roadmap.
 - **Single tab at a time** — Chrome's tabCapture only allows one active capture per extension instance.
 - **ScriptProcessorNode is deprecated** but works reliably in offscreen documents today.
 
@@ -167,7 +171,7 @@ The host JSON has `allowed_origins` baked in for extension ID `cbahglicegngghebk
 - [ ] macOS / Linux Native Messaging installer
 - [ ] Bilingual mode (original + translation stacked)
 - [ ] Per-site overlay position memory
-- [ ] Whisper streaming mode (partial transcripts before chunk-end)
+- [x] OpenAI Realtime Translation mode (partial translated subtitles before chunk-end)
 - [ ] VAD-aware adaptive chunking instead of fixed 1.5s
 
 ---
@@ -214,3 +218,4 @@ Open an issue first if you're planning anything substantial so we can align.
 ## License
 
 [MIT](./LICENSE) — do what you want, just don't blame me if it breaks. ✨
+"# sub-stream" 
