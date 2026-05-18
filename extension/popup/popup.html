@@ -2,23 +2,30 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Kami Subs</title>
+    <title>Sub Stream AI</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header>
-      <h1>Kami Subs <span class="spark">✨</span></h1>
-      <p class="tagline">Live AI subtitles on any video</p>
+    <header class="app-header">
+      <div class="brand-mark">SS</div>
+      <div>
+        <h1>Sub Stream AI</h1>
+        <p class="tagline">Live translated captions</p>
+      </div>
     </header>
 
     <main>
-      <button id="toggle" class="primary">Start</button>
-      <div id="status" class="status idle">Idle</div>
-      <div id="backendStatus" class="backend-status idle">Backend: unknown</div>
+      <section class="control-panel">
+        <button id="toggle" class="primary">Start</button>
+        <div class="status-grid">
+          <div id="status" class="status idle">Idle</div>
+          <div id="backendStatus" class="backend-status idle">Backend: unknown</div>
+        </div>
+      </section>
 
       <section class="usage-panel">
         <div class="usage-head">
-          <span>AI spend estimate</span>
+          <span>AI cost estimate</span>
           <button id="resetUsage" type="button">Reset</button>
         </div>
         <div class="usage-grid">
@@ -35,94 +42,106 @@
             <strong id="usageTotal">$0.00</strong>
           </div>
         </div>
-        <p id="usageMeta" class="usage-meta">Realtime Cloud only</p>
+        <p id="usageMeta" class="usage-meta">Realtime active audio only</p>
       </section>
 
-      <section class="settings">
-        <label>
-          Source language
-          <select id="sourceLang">
-            <option value="auto" selected>Auto detect</option>
-            <option value="en">English</option>
-            <option value="es">Spanish</option>
-            <option value="fr">French</option>
-            <option value="de">German</option>
-            <option value="ja">Japanese</option>
-            <option value="ko">Korean</option>
-            <option value="zh">Chinese</option>
-            <option value="tr">Turkish</option>
-            <option value="hi">Hindi</option>
-          </select>
-        </label>
+      <section class="settings-section">
+        <h2>Language</h2>
+        <div class="settings">
+          <label>
+            Source
+            <select id="sourceLang">
+              <option value="auto" selected>Auto detect</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="zh">Chinese</option>
+              <option value="tr">Turkish</option>
+              <option value="hi">Hindi</option>
+            </select>
+          </label>
 
-        <label>
-          Target language
-          <select id="targetLang">
-            <option value="ar" selected>Arabic</option>
-            <option value="en">English</option>
-            <option value="es">Spanish</option>
-            <option value="fr">French</option>
-            <option value="de">German</option>
-            <option value="tr">Turkish</option>
-          </select>
-        </label>
+          <label>
+            Target
+            <select id="targetLang">
+              <option value="ar" selected>Arabic</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="tr">Turkish</option>
+            </select>
+          </label>
+        </div>
+      </section>
 
-        <label>
-          Font size <span id="fontSizeVal">28</span>px
-          <input type="range" id="fontSize" min="14" max="56" step="2" value="28" />
-        </label>
+      <section class="settings-section">
+        <h2>Display</h2>
+        <div class="settings">
+          <label>
+            Font size <span id="fontSizeVal">28</span>px
+            <input type="range" id="fontSize" min="14" max="56" step="2" value="28" />
+          </label>
 
-        <label>
-          Position
-          <select id="position">
-            <option value="bottom" selected>Bottom</option>
-            <option value="top">Top</option>
-          </select>
-        </label>
+          <label>
+            Position
+            <select id="position">
+              <option value="bottom" selected>Bottom</option>
+              <option value="top">Top</option>
+            </select>
+          </label>
 
-        <label>
-          Audio sync delay <span id="audioDelayVal">0.0</span>s
-          <input type="range" id="audioDelay" min="0" max="6000" step="100" value="0" />
-        </label>
+          <label>
+            Audio sync delay <span id="audioDelayVal">0.0</span>s
+            <input type="range" id="audioDelay" min="0" max="6000" step="100" value="0" />
+          </label>
+        </div>
+      </section>
 
-        <label>
-          Transcription engine
-          <select id="transcriber">
-            <option value="openai-realtime" selected>Realtime Cloud (OpenAI)</option>
-            <option value="local">Local Whisper</option>
-            <option value="openai">OpenAI chunked fallback</option>
-          </select>
-        </label>
+      <section class="settings-section">
+        <h2>Engine</h2>
+        <div class="settings">
+          <label>
+            Transcription
+            <select id="transcriber">
+              <option value="openai-realtime" selected>Realtime Cloud (OpenAI)</option>
+              <option value="local">Local Whisper</option>
+              <option value="openai">OpenAI chunked fallback</option>
+            </select>
+          </label>
 
-        <label>
-          Whisper model
-          <select id="model">
-            <option value="tiny">tiny (fastest)</option>
-            <option value="base">base</option>
-            <option value="small" selected>small (recommended)</option>
-            <option value="medium">medium</option>
-            <option value="large-v3">large-v3 (best, GPU only)</option>
-          </select>
-        </label>
+          <label>
+            Whisper model
+            <select id="model">
+              <option value="tiny">tiny (fastest)</option>
+              <option value="base" selected>base (low latency)</option>
+              <option value="small">small (balanced)</option>
+              <option value="medium">medium (slower)</option>
+              <option value="large-v3">large-v3 (high VRAM)</option>
+            </select>
+          </label>
 
-        <label>
-          Device
-          <select id="device">
-            <option value="cpu">CPU</option>
-            <option value="cuda" selected>GPU (CUDA)</option>
-          </select>
-        </label>
+          <label>
+            Device
+            <select id="device">
+              <option value="cpu">CPU</option>
+              <option value="cuda" selected>GPU (CUDA)</option>
+            </select>
+          </label>
+        </div>
+      </section>
 
+      <details class="advanced">
+        <summary>Advanced</summary>
         <label>
           Backend URL
           <input type="text" id="backendUrl" value="ws://127.0.0.1:8765/ws" />
         </label>
-      </section>
+      </details>
     </main>
-
-    <footer>
-      <span class="hint">Backend auto-starts via Native Messaging. See README if "host unavailable".</span>
-    </footer>
 
     <script src="popup.js"></script>
   </body>

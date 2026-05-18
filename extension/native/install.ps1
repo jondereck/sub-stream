@@ -1,4 +1,4 @@
-# Kami Subs — install the Native Messaging host for Chrome (current user).
+# Sub Stream AI — install the Native Messaging host for Chrome (current user).
 #
 # What this does:
 #   1) Renders the host manifest template with the absolute path to launcher.bat

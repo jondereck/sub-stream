@@ -1,4 +1,4 @@
-# Kami Subs — remove the Native Messaging host registration.
+# Sub Stream AI — remove the Native Messaging host registration.
 $ErrorActionPreference = 'SilentlyContinue'
 
 $HostName = 'com.kamisubs.host'

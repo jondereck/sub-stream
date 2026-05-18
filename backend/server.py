@@ -1,5 +1,5 @@
 """
-Kami Subs — local Whisper + translation backend.
+Sub Stream AI — local Whisper + translation backend.
 
 WebSocket protocol:
   client -> server (text JSON):
@@ -50,9 +50,9 @@ def _register_nvidia_dll_dirs() -> None:
             nvidia_root = Path(paths[0]).resolve().parent
             break
     if nvidia_root is None:
-        print("[kami-subs] nvidia packages not installed; running on CPU only")
+        print("[sub-stream-ai] nvidia packages not installed; running on CPU only")
         return
-    print(f"[kami-subs] nvidia root: {nvidia_root}")
+    print(f"[sub-stream-ai] nvidia root: {nvidia_root}")
 
     bin_dirs = [nvidia_root / sub for sub in (
         "cuda_runtime/bin", "cublas/bin", "cudnn/bin", "cuda_nvrtc/bin",
@@ -93,7 +93,7 @@ def _register_nvidia_dll_dirs() -> None:
         try:
             ctypes.WinDLL(str(full))
         except OSError as e:
-            print(f"[kami-subs] failed to preload {name}: {e}")
+            print(f"[sub-stream-ai] failed to preload {name}: {e}")
 
 _register_nvidia_dll_dirs()
 
@@ -106,12 +106,13 @@ from config import (
     VAD_FILTER, MAX_CHUNK_LAG_S,
 )
 
-log = logging.getLogger("kami-subs")
+log = logging.getLogger("sub-stream-ai")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 # ----- model load (lazy, once per process) ----------------------------------
 _model = None
 _openai_client = None
+_effective_compute_type = None
 
 OPENAI_REALTIME_TRANSLATE_MODEL = "gpt-realtime-translate"
 OPENAI_REALTIME_TRANSLATE_URL = (
@@ -127,12 +128,37 @@ ALLOWED_TARGET_LANGS = {
     "it", "pt", "ru", "id", "ms", "th", "vi", "fil",
 }
 
+def resolve_compute_type(device: str, requested: str) -> str:
+    if device != "cuda":
+        return requested
+    try:
+        import ctranslate2
+        supported = ctranslate2.get_supported_compute_types("cuda")
+    except Exception as e:
+        log.warning("could not inspect CUDA compute types: %s", e)
+        return requested
+
+    if requested in supported:
+        return requested
+
+    for fallback in ("int8_float32", "int8", "float32"):
+        if fallback in supported:
+            log.warning(
+                "compute type %s is unsupported on this CUDA device; using %s",
+                requested,
+                fallback,
+            )
+            return fallback
+    return requested
+
+
 def get_model():
-    global _model
+    global _model, _effective_compute_type
     if _model is None:
         from faster_whisper import WhisperModel
-        log.info("loading whisper model=%s device=%s compute=%s", MODEL_SIZE, DEVICE, COMPUTE_TYPE)
-        _model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
+        _effective_compute_type = resolve_compute_type(DEVICE, COMPUTE_TYPE)
+        log.info("loading whisper model=%s device=%s compute=%s", MODEL_SIZE, DEVICE, _effective_compute_type)
+        _model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=_effective_compute_type)
         log.info("whisper model ready")
     return _model
 
@@ -220,6 +246,14 @@ class Session:
     chunk_id: int = 0
     next_chunk_id: int | None = None
     next_chunk_captured_at: float | None = None
+
+
+@dataclass
+class ChunkItem:
+    raw_bytes: bytes
+    arrived_at: float
+    captured_at: float | None = None
+    client_chunk_id: int | None = None
 
 
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
@@ -413,6 +447,49 @@ async def _handle_chunk(
     }, ensure_ascii=False))
 
 
+async def replace_latest_chunk(
+    queue: asyncio.Queue[ChunkItem | None],
+    item: ChunkItem | None,
+) -> None:
+    while True:
+        try:
+            queue.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+                queue.task_done()
+            except asyncio.QueueEmpty:
+                continue
+
+
+async def handle_latest_chunk_queue(
+    ws: WebSocket,
+    session: Session,
+    queue: asyncio.Queue[ChunkItem | None],
+) -> None:
+    loop = asyncio.get_running_loop()
+    while True:
+        item = await queue.get()
+        try:
+            if item is None:
+                return
+            await _handle_chunk(
+                ws,
+                session,
+                loop,
+                item.raw_bytes,
+                item.arrived_at,
+                item.captured_at,
+                item.client_chunk_id,
+            )
+        except Exception as e:
+            log.exception("chunk handler error: %s", e)
+            await send_safe_error(ws, f"chunk processing failed: {e}")
+        finally:
+            queue.task_done()
+
+
 def realtime_session_update(target_lang: str) -> dict:
     return {
         "type": "session.update",
@@ -510,7 +587,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "OpenAI-Safety-Identifier": "kami-subs-local-user",
+        "OpenAI-Safety-Identifier": "sub-stream-ai-local-user",
     }
 
     try:
@@ -626,6 +703,8 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
 async def handle_socket(ws: WebSocket):
     await ws.accept()
     session = Session()
+    chunk_queue: asyncio.Queue[ChunkItem | None] | None = None
+    chunk_worker: asyncio.Task | None = None
     log.info("client connected")
 
     try:
@@ -646,45 +725,27 @@ async def handle_socket(ws: WebSocket):
             await handle_realtime_socket(ws, session)
             return
 
-        # Main loop: receive binary PCM chunks, transcribe, translate, push back.
-        loop = asyncio.get_running_loop()
+        # Keep only the newest pending chunk while Whisper/OpenAI chunked work
+        # is running. Live subtitles should skip stale audio, not build backlog.
+        chunk_queue = asyncio.Queue(maxsize=1)
+        chunk_worker = asyncio.create_task(handle_latest_chunk_queue(ws, session, chunk_queue))
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
                 break
 
             if "bytes" in msg and msg["bytes"]:
-                # Stamp arrival time NOW so the chunk handler can detect
-                # backlog. If we stamped inside _handle_chunk, the time would
-                # already include the previous chunk's processing wait.
-                arrived_at = time.monotonic()
-                # Process each chunk in its own try block — a single bad
-                # chunk (translator throw, whisper edge case, etc) used to
-                # kill the entire WS session. Now we just log and continue.
-                try:
-                    captured_at = session.next_chunk_captured_at
-                    client_chunk_id = session.next_chunk_id
-                    session.next_chunk_captured_at = None
-                    session.next_chunk_id = None
-                    await _handle_chunk(
-                        ws,
-                        session,
-                        loop,
-                        msg["bytes"],
-                        arrived_at,
-                        captured_at,
-                        client_chunk_id,
-                    )
-                except Exception as e:
-                    log.exception("chunk handler error: %s", e)
-                    try:
-                        await ws.send_text(json.dumps({
-                            "type": "error",
-                            "message": f"chunk processing failed: {e}",
-                        }))
-                    except Exception:
-                        pass
-                    # Don't break — let the session keep running for the next chunk.
+                await replace_latest_chunk(
+                    chunk_queue,
+                    ChunkItem(
+                        raw_bytes=msg["bytes"],
+                        arrived_at=time.monotonic(),
+                        captured_at=session.next_chunk_captured_at,
+                        client_chunk_id=session.next_chunk_id,
+                    ),
+                )
+                session.next_chunk_captured_at = None
+                session.next_chunk_id = None
 
             elif "text" in msg and msg["text"]:
                 # Allow runtime reconfig and optional per-chunk metadata.
@@ -704,6 +765,9 @@ async def handle_socket(ws: WebSocket):
                 except json.JSONDecodeError:
                     pass
 
+        await replace_latest_chunk(chunk_queue, None)
+        await chunk_worker
+
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -713,6 +777,12 @@ async def handle_socket(ws: WebSocket):
         except Exception:
             pass
     finally:
+        if chunk_worker and not chunk_worker.done() and chunk_queue:
+            await replace_latest_chunk(chunk_queue, None)
+            try:
+                await chunk_worker
+            except Exception as e:
+                log.debug("chunk worker stopped with error: %s", e)
         log.info("client disconnected")
 
 
@@ -736,7 +806,7 @@ async def root():
         "ok": True,
         "model": MODEL_SIZE,
         "device": DEVICE,
-        "compute": COMPUTE_TYPE,
+        "compute": _effective_compute_type or resolve_compute_type(DEVICE, COMPUTE_TYPE),
         "transcriber": TRANSCRIBER,
         "openai_transcribe_model": OPENAI_TRANSCRIBE_MODEL if TRANSCRIBER == "openai" else None,
         "openai_realtime_model": OPENAI_REALTIME_TRANSLATE_MODEL if TRANSCRIBER == REALTIME_TRANSCRIBER else None,

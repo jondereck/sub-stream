@@ -1,4 +1,4 @@
-// Kami Subs — content script
+// Sub Stream AI — content script
 // Mounts a subtitle overlay anchored over the most likely active video element.
 
 const OVERLAY_ID = 'kami-subs-overlay';

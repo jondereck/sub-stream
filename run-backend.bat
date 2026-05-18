@@ -1,12 +1,12 @@
 @echo off
 setlocal
-title Kami Subs - Manual Backend
+title Sub Stream AI - Manual Backend
 
 cd /d "%~dp0"
 
 if not exist "backend" (
   echo [ERROR] backend folder not found.
-  echo Put this file in the root of the kami-subs repo.
+  echo Put this file in the root of the sub-stream repo.
   pause
   exit /b 1
 )
@@ -26,7 +26,7 @@ if errorlevel 1 (
 )
 
 cd backend
-echo Starting Kami Subs backend...
+echo Starting Sub Stream AI backend...
 echo Keep this window open while using subtitles.
 echo.
 python server.py

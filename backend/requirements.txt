@@ -1,6 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.27
-websockets>=16
+websockets>=15,<16
 numpy>=1.26
 faster-whisper>=1.0.3
 deep-translator>=1.11.4

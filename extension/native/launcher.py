@@ -1,5 +1,5 @@
 """
-Kami Subs — Native Messaging host.
+Sub Stream AI — Native Messaging host.
 
 Spawned by Chrome (via launcher.bat) when the extension calls
 chrome.runtime.connectNative('com.kamisubs.host'). Speaks Chrome's
@@ -142,7 +142,7 @@ class BackendManager:
         # Pipe backend stdout/stderr lines back to extension as 'log' messages.
         # Useful for surfacing errors in the popup without leaving a console.
         self._log_thread = threading.Thread(
-            target=self._pump_logs, daemon=True, name="kami-backend-logs"
+            target=self._pump_logs, daemon=True, name="sub-stream-ai-backend-logs"
         )
         self._log_thread.start()
 

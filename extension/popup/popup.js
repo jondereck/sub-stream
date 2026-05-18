@@ -1,4 +1,4 @@
-// Kami Subs — popup controller
+// Sub Stream AI — popup controller
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,7 +25,7 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 2,
+  settingsVersion: 3,
   sourceLang: 'auto',
   targetLang: 'ar',
   fontSize: 28,
@@ -34,13 +34,11 @@ const DEFAULTS = {
   transcriber: 'openai-realtime',
   backendUrl: 'ws://127.0.0.1:8765/ws',
   task: 'translate',
-  model: 'small',
+  model: 'base',
   device: 'cuda',
 };
 
-// compute_type pairs naturally with device — int8 for CPU (fastest there),
-// float16 for GPU (fastest there). Expose if we ever need finer control.
-function computeFor(device) { return device === 'cuda' ? 'float16' : 'int8'; }
+function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'; }
 
 function formatDelay(ms) {
   return (Math.max(0, parseInt(ms, 10) || 0) / 1000).toFixed(1);
@@ -61,7 +59,7 @@ function updateUsage(usage) {
   els.usageTotal.textContent = formatCost(usage.totalCostUsd);
   const rate = formatCost(usage.usdPerMinute);
   const todayMin = formatMinutes(usage.todayMs);
-  els.usageMeta.textContent = `${todayMin} min today at ${rate}/min estimate`;
+  els.usageMeta.textContent = `${todayMin} active min today at ${rate}/min`;
 }
 
 async function loadSettings() {
@@ -70,6 +68,9 @@ async function loadSettings() {
   const s = { ...DEFAULTS, ...saved };
   if (!saved.settingsVersion && saved.transcriber === 'local') {
     s.transcriber = DEFAULTS.transcriber;
+  }
+  if ((saved.settingsVersion || 0) < 3 && (!saved.model || saved.model === 'small')) {
+    s.model = DEFAULTS.model;
   }
   els.sourceLang.value = s.sourceLang;
   els.targetLang.value = s.targetLang;

@@ -1,4 +1,4 @@
-# Kami Subs ✨
+# Sub Stream AI
 
 > Live AI-generated subtitles, overlaid on any browser video, translated into any language — with a local backend and realtime cloud translation by default.
 
@@ -42,8 +42,8 @@ The backend stays on your machine. The extension talks to it over `ws://127.0.0.
 - **Chrome or Edge** (Chromium ≥ 116)
 - **Python 3.10+** on PATH
 - **OpenAI API key** for the default Realtime Cloud engine. Local Whisper can run without an API key.
-- **GPU recommended for Local Whisper** — an NVIDIA card with CUDA 12 + cuDNN 9 reduces fallback latency. CPU works but can introduce 3-5s delay with the `small` model.
-- ~500 MB disk for the `small` Whisper model (downloaded on first run). Larger models up to ~3 GB.
+- **GPU recommended for Local Whisper** — an NVIDIA card with CUDA 12 + cuDNN 9 reduces fallback latency. CPU works but can introduce delay with larger models.
+- ~150 MB disk for the default `base` Whisper model (downloaded on first run). Larger models can use several GB.
 
 ---
 
@@ -54,7 +54,7 @@ Clone the repo, then:
 ### 1. Backend dependencies (one-time)
 
 ```powershell
-cd kami-subs\backend
+cd sub-stream\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -68,7 +68,7 @@ First Whisper run downloads model weights into your local cache. Realtime Cloud 
 2. Toggle **Developer mode** (top right)
 3. Click **Load unpacked**
 4. Pick the `extension/` folder of this repo
-5. Pin the **Kami Subs** action button to your toolbar
+5. Pin the **Sub Stream AI** action button to your toolbar
 
 The extension ID is pinned to `cbahglicegngghebkgnegbbgbpfdncka` via the manifest `key`, so it stays stable across reloads.
 
@@ -89,7 +89,7 @@ To remove, run `uninstall.ps1` from the same folder.
 ## Use
 
 1. Open a tab with a video
-2. Click the **Kami Subs** icon → pick model + device → **Start**
+2. Click the **Sub Stream AI** icon → pick model + device → **Start**
 3. Backend boots in the background, popup shows `Backend: up (pid …)`
 4. Subtitles appear over the video within a chunk or two
 5. Hit **Stop** when done — backend is killed automatically
@@ -105,10 +105,11 @@ To remove, run `uninstall.ps1` from the same folder.
 | Source language | Auto detect | Set explicitly to skip Whisper's lang detection |
 | Target language | Arabic | Translation target |
 | Transcription engine | Realtime Cloud (OpenAI) | Local Whisper and chunked OpenAI fallback remain available |
-| Whisper model | small | Used only by Local Whisper |
+| Whisper model | base | Used only by Local Whisper; tiny/base use shorter low-latency chunks |
 | Device | GPU (CUDA) | Used only by Local Whisper |
 | Font size | 28px | Slider 14–56 |
 | Position | Bottom | Bottom / Top |
+| AI cost estimate | Active audio only | Realtime Cloud only; paused/silent audio is not counted |
 | Backend URL | `ws://127.0.0.1:8765/ws` | Change if running the backend remotely |
 
 ---
@@ -120,13 +121,14 @@ Set these before running `server.py` manually if you want to override defaults. 
 | Var | Default | Options |
 |---|---|---|
 | `KAMI_TRANSCRIBER` | `openai-realtime` | `openai-realtime`, `local`, `openai` |
-| `KAMI_MODEL` | `small` | `tiny`, `base`, `small`, `medium`, `large-v3` |
-| `KAMI_DEVICE` | `cpu` | `cpu`, `cuda` |
-| `KAMI_COMPUTE` | `int8` | `int8` (CPU), `float16` (GPU), `int8_float16` (low VRAM GPU) |
+| `KAMI_MODEL` | `base` | `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `KAMI_DEVICE` | `cuda` | `cpu`, `cuda` |
+| `KAMI_COMPUTE` | `int8_float32` on CUDA, `int8` on CPU | `int8` (CPU), `int8_float32` (older CUDA/low VRAM), `float16` (newer GPU), `float32` |
 | `KAMI_TRANSLATOR` | `google` | `google` (deep-translator), `none` |
 | `KAMI_HOST` | `127.0.0.1` | bind host |
 | `KAMI_PORT` | `8765` | bind port |
-| `KAMI_VAD` | `false` | Enable Silero VAD pre-filtering |
+| `KAMI_VAD` | `true` | Enable Silero VAD pre-filtering |
+| `KAMI_MAX_LAG_S` | `2.0` | Drop stale chunked subtitles when processing falls behind |
 
 ---
 
@@ -157,7 +159,7 @@ The host JSON has `allowed_origins` baked in for extension ID `cbahglicegngghebk
 
 - **Windows only** for the auto-start launcher. The extension + backend work cross-platform, but the Native Messaging install script is PowerShell + Windows registry. Linux/macOS users can run the backend manually.
 - **DRM sites are silent** — fundamental tab capture limitation, not solvable from this extension.
-- **Realtime Cloud uses OpenAI API minutes** — Local Whisper remains available if you need offline/no-cloud operation.
+- **Realtime Cloud uses OpenAI API minutes** — the popup estimate counts active streamed audio only. Local Whisper remains available if you need offline/no-cloud operation.
 - **Google Translate rate-limits in chunked fallback modes** — the free `deep-translator` endpoint will throttle if you burn through a lot of long videos. Argos Translate (fully offline) is on the roadmap.
 - **Single tab at a time** — Chrome's tabCapture only allows one active capture per extension instance.
 - **ScriptProcessorNode is deprecated** but works reliably in offscreen documents today.
@@ -179,7 +181,7 @@ The host JSON has `allowed_origins` baked in for extension ID `cbahglicegngghebk
 ## File map
 
 ```
-kami-subs/
+sub-stream/
 ├── extension/
 │   ├── manifest.json
 │   ├── background.js          # MV3 service worker — orchestrates everything

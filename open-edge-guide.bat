@@ -1,9 +1,9 @@
 @echo off
-title Kami Subs - Edge Guide
+title Sub Stream AI - Edge Guide
 cd /d "%~dp0"
 
 echo ==================================================
-echo                 Kami Subs - Edge Guide
+echo                 Sub Stream AI - Edge Guide
 echo ==================================================
 echo.
 echo Follow these steps in Edge:
@@ -12,14 +12,14 @@ echo 1. Turn ON Developer mode
 echo 2. Click Load unpacked
 echo 3. Select this folder:
 echo    %cd%\extension
-echo 4. Pin the Kami Subs extension
+echo 4. Pin the Sub Stream AI extension
 echo 5. Open a video tab
 echo 6. Click the extension
 echo 7. Set:
 echo      Source language = Japanese
 echo      Target language = English
-echo      Model = tiny or small
-echo      Device = cpu
+echo      Model = base
+echo      Device = gpu if available, otherwise cpu
 echo 8. Click Start
 echo.
 echo If nothing happens:

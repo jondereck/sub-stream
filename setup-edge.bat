@@ -1,24 +1,24 @@
 @echo off
 setlocal ENABLEDELAYEDEXPANSION
-title Kami Subs - Edge Setup
+title Sub Stream AI - Edge Setup
 
 cd /d "%~dp0"
 
 echo ==================================================
-echo            Kami Subs - Edge First-Time Setup
+echo            Sub Stream AI - Edge First-Time Setup
 echo ==================================================
 echo.
 
 if not exist "backend" (
   echo [ERROR] backend folder not found.
-  echo Put this file in the root of the kami-subs repo.
+  echo Put this file in the root of the sub-stream repo.
   pause
   exit /b 1
 )
 
 if not exist "extension" (
   echo [ERROR] extension folder not found.
-  echo Put this file in the root of the kami-subs repo.
+  echo Put this file in the root of the sub-stream repo.
   pause
   exit /b 1
 )
@@ -105,14 +105,14 @@ echo 1. In Edge, turn ON Developer mode
 echo 2. Click Load unpacked
 echo 3. Select this folder:
 echo    %cd%\extension
-echo 4. Pin the Kami Subs extension
+echo 4. Pin the Sub Stream AI extension
 echo 5. Open a video tab
 echo 6. Click the extension
 echo 7. Choose:
 echo      - Source language: Japanese
 echo      - Target language: English
-echo      - Model: tiny or small
-echo      - Device: cpu
+echo      - Model: base
+echo      - Device: gpu if available, otherwise cpu
 echo 8. Click Start
 echo.
 echo If auto-start does not work:

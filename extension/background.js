@@ -1,4 +1,4 @@
-// Kami Subs — background service worker
+// Sub Stream AI — background service worker
 // Coordinates: popup <-> offscreen (audio capture) <-> content (overlay)
 //             popup -> native host (spawns the Python backend)
 
@@ -27,7 +27,8 @@ function emptyUsage() {
     today: todayKey(),
     todayMs: 0,
     totalMs: 0,
-    currentStartedAt: null,
+    currentMs: 0,
+    currentSessionActive: false,
     usdPerMinute: REALTIME_TRANSLATE_USD_PER_MIN,
   };
 }
@@ -44,13 +45,12 @@ async function readUsage() {
 }
 
 function usageSnapshot(usage) {
-  const now = Date.now();
-  const currentMs = usage.currentStartedAt ? Math.max(0, now - usage.currentStartedAt) : 0;
-  const todayMs = usage.todayMs + currentMs;
-  const totalMs = usage.totalMs + currentMs;
+  const currentMs = Number(usage.currentMs) || 0;
+  const todayMs = Number(usage.todayMs) || 0;
+  const totalMs = Number(usage.totalMs) || 0;
   const msToCost = (ms) => (ms / 60000) * REALTIME_TRANSLATE_USD_PER_MIN;
   return {
-    isTracking: !!usage.currentStartedAt,
+    isTracking: !!usage.currentSessionActive,
     currentMs,
     todayMs,
     totalMs,
@@ -71,33 +71,39 @@ async function startAiUsage(settings) {
     return;
   }
   const usage = await readUsage();
-  if (!usage.currentStartedAt) {
-    usage.currentStartedAt = Date.now();
-    await writeUsage(usage);
-  }
+  usage.currentMs = 0;
+  usage.currentSessionActive = true;
+  await writeUsage(usage);
 }
 
 async function stopAiUsage() {
   const usage = await readUsage();
-  if (!usage.currentStartedAt) return;
-  const elapsedMs = Math.max(0, Date.now() - usage.currentStartedAt);
-  usage.todayMs += elapsedMs;
-  usage.totalMs += elapsedMs;
-  usage.currentStartedAt = null;
+  usage.currentMs = 0;
+  usage.currentSessionActive = false;
   await writeUsage(usage);
 }
 
 async function resetAiUsage() {
   const usage = await readUsage();
   const next = emptyUsage();
-  if (usage.currentStartedAt) {
-    next.currentStartedAt = Date.now();
-  }
+  next.currentSessionActive = !!usage.currentSessionActive;
   await writeUsage(next);
 }
 
 async function getAiUsageSnapshot() {
   return usageSnapshot(await readUsage());
+}
+
+async function addActiveAiUsage(activeMs, transcriber) {
+  if (transcriber !== 'openai-realtime') return;
+  const ms = Math.max(0, Number(activeMs) || 0);
+  if (!ms) return;
+  const usage = await readUsage();
+  if (!usage.currentSessionActive) return;
+  usage.currentMs = (Number(usage.currentMs) || 0) + ms;
+  usage.todayMs = (Number(usage.todayMs) || 0) + ms;
+  usage.totalMs = (Number(usage.totalMs) || 0) + ms;
+  await writeUsage(usage);
 }
 
 async function hasOffscreenDocument() {
@@ -180,11 +186,11 @@ function connectNative() {
       case 'error':
         backendState = 'down';
         backendInfo = { lastError: msg.message };
-        console.error('[kami-subs native]', msg.message);
+        console.error('[sub-stream-ai native]', msg.message);
         break;
       case 'log':
         // Backend stdout/stderr, surfaced for debugging. Comment out if noisy.
-        console.log('[kami-backend]', msg.line);
+        console.log('[sub-stream-ai backend]', msg.line);
         break;
     }
   });
@@ -196,7 +202,7 @@ function connectNative() {
       // hasn't run install.ps1 yet. Mark unavailable so we stop trying.
       backendState = 'unavailable';
       backendInfo = { lastError: err.message || String(err) };
-      console.warn('[kami-subs] native host unavailable:', err.message);
+      console.warn('[sub-stream-ai] native host unavailable:', err.message);
     } else if (backendState !== 'down') {
       backendState = 'down';
     }
@@ -272,7 +278,7 @@ async function startCapture(tabId, settings) {
   try {
     await ensureContentScript(tabId);
   } catch (e) {
-    console.warn('[kami-subs] could not inject content script (restricted page?):', e);
+    console.warn('[sub-stream-ai] could not inject content script (restricted page?):', e);
   }
 
   const streamId = await new Promise((resolve, reject) => {
@@ -299,15 +305,15 @@ async function startCapture(tabId, settings) {
   try {
     await chrome.tabs.sendMessage(tabId, { type: 'overlay:mount', settings });
   } catch (e) {
-    console.warn('[kami-subs] could not message content script yet:', e);
+    console.warn('[sub-stream-ai] could not message content script yet:', e);
   }
 }
 
 async function stopCapture() {
-  await stopAiUsage();
   if (await hasOffscreenDocument()) {
     await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop' });
   }
+  await stopAiUsage();
   if (activeTabId != null) {
     try {
       await chrome.tabs.sendMessage(activeTabId, { type: 'overlay:unmount' });
@@ -358,9 +364,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, aiUsage: await getAiUsageSnapshot() });
           break;
         }
+        case 'aiUsage:addActiveMs': {
+          await addActiveAiUsage(msg.activeMs, msg.transcriber);
+          sendResponse({ ok: true });
+          break;
+        }
         case 'capture:updateSettings': {
           const settings = msg.settings || {};
           await chrome.storage.local.set({ settings });
+          if (isCapturing) {
+            if (settings.transcriber === 'openai-realtime') {
+              const usage = await readUsage();
+              if (!usage.currentSessionActive) await startAiUsage(settings);
+            } else {
+              await stopAiUsage();
+            }
+          }
           if (await hasOffscreenDocument()) {
             try {
               await chrome.runtime.sendMessage({
@@ -413,7 +432,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       }
     } catch (err) {
-      console.error('[kami-subs bg]', err);
+      console.error('[sub-stream-ai bg]', err);
       sendResponse({ ok: false, error: String(err) });
     }
   })();

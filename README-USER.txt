@@ -1,4 +1,4 @@
-KAMI SUBS - SIMPLE EDGE SETUP
+SUB STREAM AI - SIMPLE EDGE SETUP
 
 WHAT THIS DOES
 - Adds live translated subtitles to browser videos
@@ -6,23 +6,23 @@ WHAT THIS DOES
 - Works better on normal browser videos than on DRM sites
 
 FIRST TIME SETUP
-0. git clone https://github.com/MohammdKopa/kami-subs.git or download
-1. Put these BAT files in the root of the kami-subs folder
+0. git clone https://github.com/jondereck/sub-stream.git or download
+1. Put these BAT files in the root of the sub-stream folder
 2. Double-click setup-edge.bat
 3. Edge will open extensions page
 4. Turn ON Developer mode
 5. Click Load unpacked
 6. Select the extension folder inside the repo
-7. Pin the Kami Subs extension
+7. Pin the Sub Stream AI extension
 
 HOW TO USE
 1. Open a video in Edge
-2. Click the Kami Subs extension
+2. Click the Sub Stream AI extension
 3. Set:
    - Source language: Japanese
    - Target language: English
-   - Model: tiny or small
-   - Device: cpu
+   - Model: base
+   - Device: gpu if available, otherwise cpu
 4. Click Start
 5. Wait a few seconds for subtitles
 

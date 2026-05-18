@@ -1,6 +1,6 @@
 {
   "name": "com.kamisubs.host",
-  "description": "Kami Subs backend launcher (Native Messaging host)",
+  "description": "Sub Stream AI backend launcher (Native Messaging host)",
   "path": "__LAUNCHER_BAT_PATH__",
   "type": "stdio",
   "allowed_origins": [

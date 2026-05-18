@@ -1,5 +1,5 @@
 @echo off
-REM Kami Subs — Native Messaging host launcher.
+REM Sub Stream AI — Native Messaging host launcher.
 REM Chrome execs this with stdin/stdout wired to the extension.
 REM We delegate to launcher.py via the project's venv python so deps resolve.
 REM -u = unbuffered stdio (length-prefixed protocol can't tolerate buffering).

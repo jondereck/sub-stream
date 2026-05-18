@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-"""Runtime config for Kami Subs backend. Override via env vars."""
+"""Runtime config for Sub Stream AI backend. Override via env vars."""
 
 try:
     from dotenv import load_dotenv
@@ -20,17 +20,18 @@ if load_dotenv:
 TRANSCRIBER = os.getenv("KAMI_TRANSCRIBER", "openai-realtime").strip().lower()
 
 # faster-whisper model: tiny | base | small | medium | large-v3
-# Start with "small" for a good speed/quality balance on CPU.
-# Bump to "large-v3" if you have a decent GPU.
-MODEL_SIZE = os.getenv("KAMI_MODEL", "small")
+# "base" keeps local captions closer to live on low-VRAM GPUs.
+MODEL_SIZE = os.getenv("KAMI_MODEL", "base")
 
 # "cpu" | "cuda" | "auto"
-# Default to "cpu" — "auto" tries CUDA first and crashes if cublas DLLs aren't installed.
-# Set KAMI_DEVICE=cuda explicitly only if you have CUDA + cuBLAS on PATH.
-DEVICE = os.getenv("KAMI_DEVICE", "cpu")
+# Default to CUDA for this local app; switch to cpu if CUDA DLLs are unavailable.
+DEVICE = os.getenv("KAMI_DEVICE", "cuda")
 
-# "int8" (CPU), "float16" (GPU), "int8_float16" (GPU low VRAM), "float32"
-COMPUTE_TYPE = os.getenv("KAMI_COMPUTE", "int8")
+# "int8" (CPU), "int8_float32" (older CUDA/low VRAM), "float16" (newer GPU), "float32"
+COMPUTE_TYPE = os.getenv(
+    "KAMI_COMPUTE",
+    "int8_float32" if DEVICE == "cuda" else "int8",
+)
 
 # Translation backend: "google" (deep-translator via web, zero setup) | "none"
 # Future: "argos" for fully offline.
@@ -57,4 +58,4 @@ VAD_FILTER = os.getenv("KAMI_VAD", "true").lower() in ("1", "true", "yes")
 # Prevents unbounded backlog: if processing slips behind real-time, we
 # discard stale chunks so the user always sees what's *currently* playing
 # instead of subs from 30 seconds ago.
-MAX_CHUNK_LAG_S = float(os.getenv("KAMI_MAX_LAG_S", "3.0"))
+MAX_CHUNK_LAG_S = float(os.getenv("KAMI_MAX_LAG_S", "2.0"))

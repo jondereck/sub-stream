@@ -1,4 +1,4 @@
-// Kami Subs — offscreen document
+// Sub Stream AI — offscreen document
 // Captures tab audio via the streamId provided by background.js,
 // sends realtime frames or chunked PCM over WebSocket to the backend,
 // forwards transcripts back to background.js -> content overlay.
@@ -17,13 +17,15 @@ let reconnectTimer = null;
 const MAX_RECONNECT_DELAY_MS = 5000;
 const MAX_AUDIO_DELAY_MS = 8000;
 
-// Realtime Cloud sends ~100ms 24kHz frames. Local/chunked modes keep 1.5s 16kHz chunks.
+// Realtime Cloud sends tiny 24kHz frames. Local Whisper adapts chunk size by model.
 const LOCAL_SAMPLE_RATE = 16000;
 const REALTIME_SAMPLE_RATE = 24000;
-const LOCAL_CHUNK_SECONDS = 1.5;
 const REALTIME_FRAME_SECONDS = 0.05;
+const ACTIVE_AUDIO_RMS = 0.005;
 let chunkBuffer = new Float32Array(0);
 let chunkSeq = 0;
+let usageMsBuffer = 0;
+let usageFlushTimer = null;
 
 function concatFloat32(a, b) {
   const out = new Float32Array(a.length + b.length);
@@ -58,6 +60,13 @@ function float32ToInt16(float32) {
   return out;
 }
 
+function audioRms(float32) {
+  if (!float32.length) return 0;
+  let sumSquares = 0;
+  for (let i = 0; i < float32.length; i++) sumSquares += float32[i] * float32[i];
+  return Math.sqrt(sumSquares / float32.length);
+}
+
 function currentTranscriber() {
   return (settings && settings.transcriber) || 'openai-realtime';
 }
@@ -70,9 +79,40 @@ function targetSampleRate() {
   return isRealtimeMode() ? REALTIME_SAMPLE_RATE : LOCAL_SAMPLE_RATE;
 }
 
+function localChunkSeconds() {
+  const model = ((settings && settings.model) || 'base').toLowerCase();
+  if (model === 'tiny' || model === 'base') return 0.8;
+  if (model === 'small') return 1.0;
+  return 1.5;
+}
+
 function targetFrameSamples() {
-  const seconds = isRealtimeMode() ? REALTIME_FRAME_SECONDS : LOCAL_CHUNK_SECONDS;
+  const seconds = isRealtimeMode() ? REALTIME_FRAME_SECONDS : localChunkSeconds();
   return Math.round(targetSampleRate() * seconds);
+}
+
+async function flushActiveUsage() {
+  if (!usageMsBuffer) return;
+  const activeMs = Math.round(usageMsBuffer);
+  usageMsBuffer = 0;
+  try {
+    await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'aiUsage:addActiveMs',
+      activeMs,
+      transcriber: currentTranscriber()
+    });
+  } catch (e) {}
+}
+
+function trackActiveUsage(ms) {
+  if (!isRealtimeMode()) return;
+  usageMsBuffer += ms;
+  if (usageFlushTimer) return;
+  usageFlushTimer = setTimeout(() => {
+    usageFlushTimer = null;
+    flushActiveUsage();
+  }, 1000);
 }
 
 function scheduleReconnect() {
@@ -81,7 +121,7 @@ function scheduleReconnect() {
   reconnectAttempts += 1;
   // Exponential backoff capped at 5s: 250, 500, 1000, 2000, 5000, 5000...
   const delay = Math.min(MAX_RECONNECT_DELAY_MS, 250 * Math.pow(2, reconnectAttempts - 1));
-  console.warn('[kami-subs offscreen] WS reconnect in', delay, 'ms (attempt', reconnectAttempts + ')');
+  console.warn('[sub-stream-ai offscreen] WS reconnect in', delay, 'ms (attempt', reconnectAttempts + ')');
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     if (isRunning) openSocket();
@@ -126,7 +166,7 @@ function openSocket() {
         });
       }
     } catch (e) {
-      console.warn('[kami-subs offscreen] bad ws msg', e);
+      console.warn('[sub-stream-ai offscreen] bad ws msg', e);
     }
   });
 
@@ -159,6 +199,7 @@ function sendChunkIfReady() {
   while (chunkBuffer.length >= frameSamples) {
     const chunk = chunkBuffer.slice(0, frameSamples);
     chunkBuffer = chunkBuffer.slice(frameSamples);
+    if (isRealtimeMode() && audioRms(chunk) < ACTIVE_AUDIO_RMS) continue;
     const pcm16 = float32ToInt16(chunk);
     if (ws && ws.readyState === WebSocket.OPEN) {
       if (!isRealtimeMode()) {
@@ -170,6 +211,9 @@ function sendChunkIfReady() {
         }));
       }
       ws.send(pcm16.buffer);
+      if (isRealtimeMode()) {
+        trackActiveUsage((pcm16.length / targetSampleRate()) * 1000);
+      }
     }
   }
 }
@@ -190,6 +234,8 @@ async function start(streamId, incomingSettings) {
   settings = incomingSettings || {};
   isRunning = true;
   reconnectAttempts = 0;
+  usageMsBuffer = 0;
+  if (usageFlushTimer) { clearTimeout(usageFlushTimer); usageFlushTimer = null; }
   chrome.runtime.sendMessage({ target: 'background', type: 'ws:state', state: 'connecting' });
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -241,6 +287,8 @@ async function stop() {
   // against a deliberate teardown.
   isRunning = false;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (usageFlushTimer) { clearTimeout(usageFlushTimer); usageFlushTimer = null; }
+  await flushActiveUsage();
   reconnectAttempts = 0;
 
   try { if (processorNode) processorNode.disconnect(); } catch (e) {}
@@ -273,12 +321,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await stop();
         sendResponse({ ok: true });
       } else if (msg.type === 'settings:update') {
+        if (currentTranscriber() === 'openai-realtime') await flushActiveUsage();
         settings = { ...(settings || {}), ...(msg.settings || {}) };
         applyAudioDelay();
         sendResponse({ ok: true });
       }
     } catch (err) {
-      console.error('[kami-subs offscreen]', err);
+      console.error('[sub-stream-ai offscreen]', err);
       sendResponse({ ok: false, error: String(err) });
     }
   })();
