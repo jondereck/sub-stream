@@ -1,6 +1,6 @@
 // Kami Subs — offscreen document
 // Captures tab audio via the streamId provided by background.js,
-// chunks it into ~3s windows, sends as 16kHz mono PCM over WebSocket to the backend,
+// sends realtime frames or chunked PCM over WebSocket to the backend,
 // forwards transcripts back to background.js -> content overlay.
 
 let mediaStream = null;
@@ -8,20 +8,22 @@ let audioContext = null;
 let sourceNode = null;
 let processorNode = null;
 let passthroughGain = null;
+let audioDelayNode = null;
 let ws = null;
 let settings = null;
 let isRunning = false;          // true between start() and stop()
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 const MAX_RECONNECT_DELAY_MS = 5000;
+const MAX_AUDIO_DELAY_MS = 8000;
 
-// We buffer 16kHz mono Float32 samples until we hit CHUNK_SECONDS, then emit a chunk.
-// 1.5s feels live on GPU (large-v3 transcribes a 1.5s chunk in ~150ms).
-// Bump back to 2.5–3s if CPU-bound to avoid backlog.
-const TARGET_SAMPLE_RATE = 16000;
-const CHUNK_SECONDS = 1.5;
-const CHUNK_SAMPLES = TARGET_SAMPLE_RATE * CHUNK_SECONDS;
+// Realtime Cloud sends ~100ms 24kHz frames. Local/chunked modes keep 1.5s 16kHz chunks.
+const LOCAL_SAMPLE_RATE = 16000;
+const REALTIME_SAMPLE_RATE = 24000;
+const LOCAL_CHUNK_SECONDS = 1.5;
+const REALTIME_FRAME_SECONDS = 0.1;
 let chunkBuffer = new Float32Array(0);
+let chunkSeq = 0;
 
 function concatFloat32(a, b) {
   const out = new Float32Array(a.length + b.length);
@@ -30,11 +32,11 @@ function concatFloat32(a, b) {
   return out;
 }
 
-// Naive linear-interpolation resampler (input rate -> 16kHz).
+// Naive linear-interpolation resampler.
 // For tighter quality swap in an OfflineAudioContext resample later.
-function resampleTo16k(input, inputRate) {
-  if (inputRate === TARGET_SAMPLE_RATE) return input;
-  const ratio = inputRate / TARGET_SAMPLE_RATE;
+function resample(input, inputRate, targetRate) {
+  if (inputRate === targetRate) return input;
+  const ratio = inputRate / targetRate;
   const outLen = Math.floor(input.length / ratio);
   const out = new Float32Array(outLen);
   for (let i = 0; i < outLen; i++) {
@@ -54,6 +56,23 @@ function float32ToInt16(float32) {
     out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
   return out;
+}
+
+function currentTranscriber() {
+  return (settings && settings.transcriber) || 'openai-realtime';
+}
+
+function isRealtimeMode() {
+  return currentTranscriber() === 'openai-realtime';
+}
+
+function targetSampleRate() {
+  return isRealtimeMode() ? REALTIME_SAMPLE_RATE : LOCAL_SAMPLE_RATE;
+}
+
+function targetFrameSamples() {
+  const seconds = isRealtimeMode() ? REALTIME_FRAME_SECONDS : LOCAL_CHUNK_SECONDS;
+  return Math.round(targetSampleRate() * seconds);
 }
 
 function scheduleReconnect() {
@@ -78,10 +97,11 @@ function openSocket() {
     reconnectAttempts = 0;
     ws.send(JSON.stringify({
       type: 'config',
-      sampleRate: TARGET_SAMPLE_RATE,
+      sampleRate: targetSampleRate(),
       sourceLang: (settings && settings.sourceLang) || 'auto',
       targetLang: (settings && settings.targetLang) || 'ar',
-      task: (settings && settings.task) || 'translate'
+      task: (settings && settings.task) || 'translate',
+      transcriber: currentTranscriber()
     }));
     chrome.runtime.sendMessage({ target: 'background', type: 'ws:state', state: 'connected' });
   });
@@ -94,7 +114,9 @@ function openSocket() {
           target: 'background',
           type: 'transcript',
           text: data.text,
-          isFinal: !!data.isFinal
+          delta: data.delta,
+          isFinal: !!data.isFinal,
+          mode: data.mode
         });
       } else if (data.type === 'error') {
         chrome.runtime.sendMessage({
@@ -133,14 +155,35 @@ function openSocket() {
 }
 
 function sendChunkIfReady() {
-  while (chunkBuffer.length >= CHUNK_SAMPLES) {
-    const chunk = chunkBuffer.slice(0, CHUNK_SAMPLES);
-    chunkBuffer = chunkBuffer.slice(CHUNK_SAMPLES);
+  const frameSamples = targetFrameSamples();
+  while (chunkBuffer.length >= frameSamples) {
+    const chunk = chunkBuffer.slice(0, frameSamples);
+    chunkBuffer = chunkBuffer.slice(frameSamples);
     const pcm16 = float32ToInt16(chunk);
     if (ws && ws.readyState === WebSocket.OPEN) {
+      if (!isRealtimeMode()) {
+        const chunkId = ++chunkSeq;
+        ws.send(JSON.stringify({
+          type: 'chunk',
+          chunkId,
+          capturedAt: Date.now() / 1000
+        }));
+      }
       ws.send(pcm16.buffer);
     }
   }
+}
+
+function getAudioDelayMs() {
+  const raw = settings && Number(settings.audioDelayMs);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(0, Math.min(MAX_AUDIO_DELAY_MS, raw));
+}
+
+function applyAudioDelay() {
+  if (!audioContext || !audioDelayNode) return;
+  const seconds = getAudioDelayMs() / 1000;
+  audioDelayNode.delayTime.setTargetAtTime(seconds, audioContext.currentTime, 0.03);
 }
 
 async function start(streamId, incomingSettings) {
@@ -163,21 +206,24 @@ async function start(streamId, incomingSettings) {
   sourceNode = audioContext.createMediaStreamSource(mediaStream);
 
   // Keep the user hearing the tab audio (capture mutes the tab by default).
+  // The delay node lets users manually sync late subtitles by delaying audio.
   passthroughGain = audioContext.createGain();
   passthroughGain.gain.value = 1.0;
-  sourceNode.connect(passthroughGain).connect(audioContext.destination);
+  audioDelayNode = audioContext.createDelay(MAX_AUDIO_DELAY_MS / 1000);
+  sourceNode.connect(passthroughGain).connect(audioDelayNode).connect(audioContext.destination);
+  applyAudioDelay();
 
-  // Mono mixdown + buffer for chunked send.
+  // Mono mixdown + buffer for realtime streaming or chunked send.
   // ScriptProcessorNode is deprecated but works reliably in offscreen contexts
   // without requiring an extra worklet file. Swap to AudioWorklet later if needed.
-  processorNode = audioContext.createScriptProcessor(4096, 2, 1);
+  processorNode = audioContext.createScriptProcessor(2048, 2, 1);
   processorNode.onaudioprocess = (e) => {
     const inBuf = e.inputBuffer;
     const ch0 = inBuf.getChannelData(0);
     const ch1 = inBuf.numberOfChannels > 1 ? inBuf.getChannelData(1) : ch0;
     const mono = new Float32Array(ch0.length);
     for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
-    const resampled = resampleTo16k(mono, audioContext.sampleRate);
+    const resampled = resample(mono, audioContext.sampleRate, targetSampleRate());
     chunkBuffer = concatFloat32(chunkBuffer, resampled);
     sendChunkIfReady();
   };
@@ -200,6 +246,7 @@ async function stop() {
   try { if (processorNode) processorNode.disconnect(); } catch (e) {}
   try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
   try { if (passthroughGain) passthroughGain.disconnect(); } catch (e) {}
+  try { if (audioDelayNode) audioDelayNode.disconnect(); } catch (e) {}
   try { if (audioContext) await audioContext.close(); } catch (e) {}
   try { if (mediaStream) mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (e) {}
@@ -209,8 +256,10 @@ async function stop() {
   sourceNode = null;
   processorNode = null;
   passthroughGain = null;
+  audioDelayNode = null;
   ws = null;
   chunkBuffer = new Float32Array(0);
+  chunkSeq = 0;
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -222,6 +271,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
       } else if (msg.type === 'stop') {
         await stop();
+        sendResponse({ ok: true });
+      } else if (msg.type === 'settings:update') {
+        settings = { ...(settings || {}), ...(msg.settings || {}) };
+        applyAudioDelay();
         sendResponse({ ok: true });
       }
     } catch (err) {

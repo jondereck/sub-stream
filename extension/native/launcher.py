@@ -118,6 +118,7 @@ class BackendManager:
             ("KAMI_DEVICE", "device"),
             ("KAMI_COMPUTE", "compute"),
             ("KAMI_TRANSLATOR", "translator"),
+            ("KAMI_TRANSCRIBER", "transcriber"),
             ("KAMI_HOST", "host"),
             ("KAMI_PORT", "port"),
         ):

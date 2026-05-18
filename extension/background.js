@@ -135,6 +135,7 @@ async function ensureBackend(settings) {
     device:     settings.device     || undefined,
     compute:    settings.compute    || undefined,
     translator: settings.translator || undefined,
+    transcriber: settings.transcriber || undefined,
   };
   backendState = 'starting';
   try {
@@ -255,6 +256,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ isCapturing, activeTabId, wsState, backendState, backendInfo });
           break;
         }
+        case 'capture:updateSettings': {
+          const settings = msg.settings || {};
+          await chrome.storage.local.set({ settings });
+          if (await hasOffscreenDocument()) {
+            try {
+              await chrome.runtime.sendMessage({
+                target: 'offscreen',
+                type: 'settings:update',
+                settings
+              });
+            } catch (e) { /* offscreen may not be running */ }
+          }
+          if (activeTabId != null) {
+            try {
+              await chrome.tabs.sendMessage(activeTabId, {
+                type: 'overlay:update',
+                settings
+              });
+            } catch (e) { /* tab may be gone or content script unavailable */ }
+          }
+          sendResponse({ ok: true });
+          break;
+        }
         case 'ws:state': {
           wsState = msg.state;
           break;
@@ -266,7 +290,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               await chrome.tabs.sendMessage(activeTabId, {
                 type: 'overlay:text',
                 text: msg.text,
-                isFinal: msg.isFinal
+                delta: msg.delta,
+                isFinal: msg.isFinal,
+                mode: msg.mode
               });
             } catch (e) { /* ignore */ }
           }

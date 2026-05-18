@@ -59,6 +59,20 @@
         </label>
 
         <label>
+          Audio sync delay <span id="audioDelayVal">0.0</span>s
+          <input type="range" id="audioDelay" min="0" max="6000" step="100" value="0" />
+        </label>
+
+        <label>
+          Transcription engine
+          <select id="transcriber">
+            <option value="openai-realtime" selected>Realtime Cloud (OpenAI)</option>
+            <option value="local">Local Whisper</option>
+            <option value="openai">OpenAI chunked fallback</option>
+          </select>
+        </label>
+
+        <label>
           Whisper model
           <select id="model">
             <option value="tiny">tiny (fastest)</option>

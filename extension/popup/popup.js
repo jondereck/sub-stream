@@ -11,16 +11,22 @@ const els = {
   fontSize: $('fontSize'),
   fontSizeVal: $('fontSizeVal'),
   position: $('position'),
+  audioDelay: $('audioDelay'),
+  audioDelayVal: $('audioDelayVal'),
+  transcriber: $('transcriber'),
   backendUrl: $('backendUrl'),
   model: $('model'),
   device: $('device'),
 };
 
 const DEFAULTS = {
+  settingsVersion: 2,
   sourceLang: 'auto',
   targetLang: 'ar',
   fontSize: 28,
   position: 'bottom',
+  audioDelayMs: 0,
+  transcriber: 'openai-realtime',
   backendUrl: 'ws://127.0.0.1:8765/ws',
   task: 'translate',
   model: 'small',
@@ -31,14 +37,25 @@ const DEFAULTS = {
 // float16 for GPU (fastest there). Expose if we ever need finer control.
 function computeFor(device) { return device === 'cuda' ? 'float16' : 'int8'; }
 
+function formatDelay(ms) {
+  return (Math.max(0, parseInt(ms, 10) || 0) / 1000).toFixed(1);
+}
+
 async function loadSettings() {
   const stored = await chrome.storage.local.get('settings');
-  const s = { ...DEFAULTS, ...(stored.settings || {}) };
+  const saved = stored.settings || {};
+  const s = { ...DEFAULTS, ...saved };
+  if (!saved.settingsVersion && saved.transcriber === 'local') {
+    s.transcriber = DEFAULTS.transcriber;
+  }
   els.sourceLang.value = s.sourceLang;
   els.targetLang.value = s.targetLang;
   els.fontSize.value = s.fontSize;
   els.fontSizeVal.textContent = s.fontSize;
   els.position.value = s.position;
+  els.audioDelay.value = s.audioDelayMs;
+  els.audioDelayVal.textContent = formatDelay(s.audioDelayMs);
+  els.transcriber.value = s.transcriber;
   els.backendUrl.value = s.backendUrl;
   els.model.value = s.model;
   els.device.value = s.device;
@@ -48,10 +65,13 @@ async function loadSettings() {
 async function saveSettings() {
   const device = els.device.value;
   const s = {
+    settingsVersion: DEFAULTS.settingsVersion,
     sourceLang: els.sourceLang.value,
     targetLang: els.targetLang.value,
     fontSize: parseInt(els.fontSize.value, 10),
     position: els.position.value,
+    audioDelayMs: parseInt(els.audioDelay.value, 10) || 0,
+    transcriber: els.transcriber.value,
     backendUrl: els.backendUrl.value.trim() || DEFAULTS.backendUrl,
     task: 'translate',
     model: els.model.value,
@@ -60,6 +80,20 @@ async function saveSettings() {
   };
   await chrome.storage.local.set({ settings: s });
   return s;
+}
+
+async function saveAndBroadcastSettings() {
+  const settings = await saveSettings();
+  try {
+    await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'capture:updateSettings',
+      settings
+    });
+  } catch (e) {
+    // Background may be asleep while not capturing; saved settings still apply on next start.
+  }
+  return settings;
 }
 
 function setStatus(text, kind) {
@@ -126,9 +160,14 @@ async function onToggle() {
 
 els.fontSize.addEventListener('input', () => {
   els.fontSizeVal.textContent = els.fontSize.value;
+  saveAndBroadcastSettings();
 });
-['sourceLang','targetLang','fontSize','position','backendUrl','model','device'].forEach(k => {
-  els[k].addEventListener('change', saveSettings);
+els.audioDelay.addEventListener('input', () => {
+  els.audioDelayVal.textContent = formatDelay(els.audioDelay.value);
+  saveAndBroadcastSettings();
+});
+['sourceLang','targetLang','fontSize','position','audioDelay','transcriber','backendUrl','model','device'].forEach(k => {
+  els[k].addEventListener('change', saveAndBroadcastSettings);
 });
 els.toggle.addEventListener('click', onToggle);
 

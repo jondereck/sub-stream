@@ -1,5 +1,23 @@
-"""Runtime config for Kami Subs backend. Override via env vars."""
 import os
+from pathlib import Path
+
+"""Runtime config for Kami Subs backend. Override via env vars."""
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv:
+    _backend_dir = Path(__file__).resolve().parent
+    load_dotenv(_backend_dir.parent / ".env")
+    load_dotenv(_backend_dir / ".env", override=True)
+
+# Transcription engine:
+#   "openai-realtime" streams audio to OpenAI Realtime Translation.
+#   "local" uses faster-whisper.
+#   "openai" uses chunked OpenAI speech-to-text.
+TRANSCRIBER = os.getenv("KAMI_TRANSCRIBER", "openai-realtime").strip().lower()
 
 # faster-whisper model: tiny | base | small | medium | large-v3
 # Start with "small" for a good speed/quality balance on CPU.
@@ -18,11 +36,16 @@ COMPUTE_TYPE = os.getenv("KAMI_COMPUTE", "int8")
 # Future: "argos" for fully offline.
 TRANSLATOR = os.getenv("KAMI_TRANSLATOR", "google")
 
+# OpenAI speech-to-text model used when KAMI_TRANSCRIBER=openai.
+OPENAI_TRANSCRIBE_MODEL = os.getenv("KAMI_OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+
 HOST = os.getenv("KAMI_HOST", "127.0.0.1")
 PORT = int(os.getenv("KAMI_PORT", "8765"))
 
-# Input audio from the extension is always 16kHz mono PCM Int16.
+# Chunked input audio from the extension is 16kHz mono PCM Int16.
+# Realtime translation sessions use 24kHz mono PCM Int16.
 SAMPLE_RATE = 16000
+REALTIME_SAMPLE_RATE = 24000
 
 # VAD trims silence/music before transcription. Enabled by default because
 # whisper hallucinates fansub credits on non-speech audio — Silero VAD

@@ -3,7 +3,7 @@
 
 const OVERLAY_ID = 'kami-subs-overlay';
 const MAX_VISIBLE_CHARS = 180;
-const FADE_AFTER_MS = 6000;
+const FADE_AFTER_MS = 3500;
 
 let overlayEl = null;
 let textEl = null;
@@ -135,6 +135,7 @@ function setText(text) {
   let t = (text || '').trim();
   if (!t) {
     // Empty transcript — hide instead of showing a blank black box.
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     overlayEl.classList.remove('kami-visible');
     textEl.textContent = '';
     return;
@@ -145,7 +146,13 @@ function setText(text) {
   positionOverlayOverVideo();
   // Keep visible until the next chunk arrives, instead of fading after 6s —
   // a long pause between transcripts shouldn't blank the screen mid-scene.
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+  if (hideTimer) clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    if (!overlayEl || !textEl) return;
+    overlayEl.classList.remove('kami-visible');
+    textEl.textContent = '';
+    hideTimer = null;
+  }, FADE_AFTER_MS);
 }
 
 function showError(msg) {
@@ -163,6 +170,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg.type) {
     case 'ping':            sendResponse({ ok: true }); return true;
     case 'overlay:mount':   mount(msg.settings); break;
+    case 'overlay:update':  applySettings(msg.settings || {}); positionOverlayOverVideo(); break;
     case 'overlay:unmount': unmount(); break;
     case 'overlay:text':    setText(msg.text); break;
     case 'overlay:error':   showError(msg.message); break;
