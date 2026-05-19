@@ -147,13 +147,10 @@ function unmount() {
 }
 
 function subtitleOffsetMs() {
-  const effective = Number(currentSyncMetrics && currentSyncMetrics.effectiveOffsetS);
-  if (Number.isFinite(effective)) {
-    return Math.max(MIN_SUBTITLE_DELAY_MS, Math.min(MAX_SUBTITLE_DELAY_MS, effective * 1000));
-  }
-  const raw = Number(currentSettings.subtitleDelayMs);
-  if (!Number.isFinite(raw)) return 0;
-  return Math.max(MIN_SUBTITLE_DELAY_MS, Math.min(MAX_SUBTITLE_DELAY_MS, raw));
+  const autoOffsetS = (currentSyncMetrics && Number(currentSyncMetrics.autoOffsetS)) || 0;
+  const manualOffsetMs = Number(currentSettings.subtitleDelayMs) || 0;
+  const effectiveMs = (autoOffsetS * 1000) + manualOffsetMs;
+  return Math.max(MIN_SUBTITLE_DELAY_MS, Math.min(MAX_SUBTITLE_DELAY_MS, effectiveMs));
 }
 
 function subtitleDurationMs() {
@@ -187,11 +184,10 @@ function updateSubtitles() {
   const minVisibleMs = MIN_SUBTITLE_DURATION_MS;
 
   // 1. Process Queue: promote pending to active if it's time to show.
-  // We consume all items in the queue that have already passed their showAt time,
-  // leaving only the most recent one as activeSubtitle.
   while (subtitleQueue.length > 0) {
     const next = subtitleQueue[0];
     const showAt = next.segmentStartTs + offsetMs;
+    // If the next subtitle in queue should already be visible, promote it.
     if (now >= showAt) {
       activeSubtitle = subtitleQueue.shift();
     } else {
@@ -203,7 +199,8 @@ function updateSubtitles() {
   if (activeSubtitle) {
     const showAt = activeSubtitle.segmentStartTs + offsetMs;
     let hideAt = activeSubtitle.segmentEndTs + offsetMs;
-    // Fallback: ensure minimum duration
+    // Fallback: ensure minimum duration for readability.
+    // Manual offset shifts both showAt and hideAt, so duration is preserved.
     hideAt = Math.max(hideAt, showAt + minVisibleMs);
 
     if (now >= showAt && now < hideAt) {
@@ -219,12 +216,15 @@ function updateSubtitles() {
         positionOverlayOverVideo();
       }
     } else {
-      // Outside visible window (either expired or pushed into future by offset)
+      // Outside visible window
       if (overlayEl.classList.contains('kami-visible')) {
         overlayEl.classList.remove('kami-visible');
         textEl.textContent = '';
       }
 
+      // If it's already past the hide time, clear it so we don't keep checking.
+      // If now < showAt (due to positive offset), we keep it as activeSubtitle
+      // so it will show up when time reaches showAt.
       if (now >= hideAt) {
         activeSubtitle = null;
       }
@@ -246,7 +246,8 @@ function setTranscriptText(msg) {
 
   const receivedAtMs = Number(msg.receivedAtMs) || Date.now();
 
-  // Use segment timestamps if available, otherwise derive from receivedAtMs
+  // Use segment timestamps from backend if available (converted to ms).
+  // Otherwise, fallback to arrival time.
   let segmentStartTs = msg.segmentStartTs ? msg.segmentStartTs * 1000 : receivedAtMs;
   let segmentEndTs = msg.segmentEndTs ? msg.segmentEndTs * 1000 : segmentStartTs + subtitleDurationMs();
 
@@ -254,18 +255,27 @@ function setTranscriptText(msg) {
     text,
     segmentStartTs,
     segmentEndTs,
-    receivedAtMs
+    receivedAtMs,
+    chunkId: msg.chunkId
   };
 
   // If this is an update to the current active subtitle or the latest queued one, replace it.
-  // We use a 200ms threshold to identify "same" segments from potentially slightly varied timestamps.
+  // We prefer chunkId if available for exact matching, otherwise use timestamp proximity.
   let replaced = false;
-  if (activeSubtitle && Math.abs(activeSubtitle.segmentStartTs - segmentStartTs) < 200) {
-    activeSubtitle = item;
-    replaced = true;
-  } else if (subtitleQueue.length > 0) {
+  if (activeSubtitle) {
+    const match = (item.chunkId && activeSubtitle.chunkId === item.chunkId) ||
+                  (!item.chunkId && Math.abs(activeSubtitle.segmentStartTs - segmentStartTs) < 200);
+    if (match) {
+      activeSubtitle = item;
+      replaced = true;
+    }
+  }
+
+  if (!replaced && subtitleQueue.length > 0) {
     const last = subtitleQueue[subtitleQueue.length - 1];
-    if (Math.abs(last.segmentStartTs - segmentStartTs) < 200) {
+    const match = (item.chunkId && last.chunkId === item.chunkId) ||
+                  (!item.chunkId && Math.abs(last.segmentStartTs - segmentStartTs) < 200);
+    if (match) {
       subtitleQueue[subtitleQueue.length - 1] = item;
       replaced = true;
     }
@@ -277,8 +287,8 @@ function setTranscriptText(msg) {
     subtitleQueue.sort((a, b) => a.segmentStartTs - b.segmentStartTs);
   }
 
-  // Keep queue small
-  if (subtitleQueue.length > 5) subtitleQueue.shift();
+  // Keep queue large enough to handle high offsets (e.g. 10s offset = ~10-15 chunks)
+  if (subtitleQueue.length > 20) subtitleQueue.shift();
 }
 
 function showError(msg) {
