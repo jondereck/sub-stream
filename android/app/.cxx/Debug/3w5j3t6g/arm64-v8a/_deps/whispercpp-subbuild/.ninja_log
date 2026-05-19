@@ -1,0 +1,21 @@
+# ninja log v5
+0	386	8008536259399953	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-mkdir	7eed81bfb9834486
+0	386	8008536259399953	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-mkdir	7eed81bfb9834486
+387	18526	8008536440873450	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-download	1bd1e67ad6e9768
+387	18526	8008536440873450	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-download	1bd1e67ad6e9768
+18527	18650	0	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-update	bbb1818c808994d6
+18527	18650	0	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-update	bbb1818c808994d6
+18650	18699	8008536442599230	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-patch	c3a2980ef002a245
+18650	18699	8008536442599230	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-patch	c3a2980ef002a245
+18699	18748	8008536443089354	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-configure	6dc9b89dd767923
+18699	18748	8008536443089354	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-configure	6dc9b89dd767923
+18749	18801	8008536443614520	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-build	b3cda3735450291e
+18749	18801	8008536443614520	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-build	b3cda3735450291e
+18801	18852	8008536444124645	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-install	4eb39b2ed42f8ae3
+18801	18852	8008536444124645	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-install	4eb39b2ed42f8ae3
+18852	18902	8008536444629784	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-test	9bd5715045a052ad
+18852	18902	8008536444629784	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-test	9bd5715045a052ad
+18903	18970	8008536445304992	CMakeFiles/whispercpp-populate-complete	8294df77833038de
+18903	18970	8008536445304992	whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-done	8294df77833038de
+18903	18970	8008536445304992	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate-complete	8294df77833038de
+18903	18970	8008536445304992	C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-done	8294df77833038de

@@ -1,0 +1,14 @@
+# Target labels
+ whispercpp-populate
+# Source files and their labels
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate-complete.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-build.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-configure.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-download.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-install.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-mkdir.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-patch.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-test.rule
+C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-update.rule

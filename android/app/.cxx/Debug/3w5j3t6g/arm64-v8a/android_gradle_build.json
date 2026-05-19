@@ -1,0 +1,69 @@
+{
+  "buildFiles": [
+    "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-src\\CMakeLists.txt",
+    "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-src\\ggml\\CMakeLists.txt",
+    "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-src\\ggml\\src\\CMakeLists.txt",
+    "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-src\\ggml\\src\\ggml-cpu\\CMakeLists.txt",
+    "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-src\\src\\CMakeLists.txt",
+    "C:\\Users\\User\\sub-stream\\android\\app\\src\\main\\cpp\\CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "C:\\Users\\User\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+      "-C",
+      "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "C:\\Users\\User\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe",
+    "-C",
+    "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "ggml::@8dc812d35f23b3704781": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "ggml",
+      "output": "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-build\\ggml\\src\\libggml.a"
+    },
+    "ggml-base::@8dc812d35f23b3704781": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "ggml-base",
+      "output": "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-build\\ggml\\src\\libggml-base.a"
+    },
+    "ggml-cpu::@8dc812d35f23b3704781": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "ggml-cpu",
+      "output": "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-build\\ggml\\src\\libggml-cpu.a"
+    },
+    "substream_whisper::@6890427a1f51a3e7e1df": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "substream_whisper",
+      "output": "C:\\Users\\User\\sub-stream\\android\\app\\build\\intermediates\\cxx\\Debug\\3w5j3t6g\\obj\\arm64-v8a\\libsubstream_whisper.so",
+      "runtimeFiles": []
+    },
+    "whisper::@1c8dd6753170a826aa63": {
+      "toolchain": "toolchain",
+      "abi": "arm64-v8a",
+      "artifactName": "whisper",
+      "output": "C:\\Users\\User\\sub-stream\\android\\app\\.cxx\\Debug\\3w5j3t6g\\arm64-v8a\\_deps\\whispercpp-build\\src\\libwhisper.a"
+    }
+  },
+  "toolchains": {
+    "toolchain": {
+      "cCompilerExecutable": "C:\\Users\\User\\AppData\\Local\\Android\\Sdk\\ndk\\27.0.12077973\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang.exe",
+      "cppCompilerExecutable": "C:\\Users\\User\\AppData\\Local\\Android\\Sdk\\ndk\\27.0.12077973\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe"
+    }
+  },
+  "cFileExtensions": [
+    "c"
+  ],
+  "cppFileExtensions": [
+    "cpp"
+  ]
+}

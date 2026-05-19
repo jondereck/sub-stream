@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/CMakeFiles/whispercpp-populate-complete.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-build.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-configure.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-download.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-install.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-mkdir.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-patch.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-test.rule"
+		},
+		{
+			"file" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-subbuild/whispercpp-populate-prefix/src/whispercpp-populate-stamp/whispercpp-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"whispercpp-populate"
+		],
+		"name" : "whispercpp-populate"
+	}
+}

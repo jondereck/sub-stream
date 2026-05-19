@@ -1,0 +1,211 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-Debug-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.6.0"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						3
+					]
+				},
+				{
+					"build" : "_deps/whispercpp-build",
+					"childIndexes" : 
+					[
+						2,
+						5
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-_deps.whispercpp-build-Debug-4b2dd6411e2c4e269745.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.5"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 1,
+					"source" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-src"
+				},
+				{
+					"build" : "_deps/whispercpp-build/ggml",
+					"childIndexes" : 
+					[
+						3
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-_deps.whispercpp-build.ggml-Debug-f5f2eb56be458ce1dded.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"parentIndex" : 1,
+					"projectIndex" : 2,
+					"source" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-src/ggml"
+				},
+				{
+					"build" : "_deps/whispercpp-build/ggml/src",
+					"childIndexes" : 
+					[
+						4
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-_deps.whispercpp-build.ggml.src-Debug-073150dcfe21330c66a1.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"parentIndex" : 2,
+					"projectIndex" : 2,
+					"source" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-src/ggml/src",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				},
+				{
+					"build" : "_deps/whispercpp-build/ggml/src/ggml-cpu",
+					"jsonFile" : "directory-_deps.whispercpp-build.ggml.src.ggml-cpu-Debug-4808f43493d12a968e6e.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.14"
+					},
+					"parentIndex" : 3,
+					"projectIndex" : 2,
+					"source" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-src/ggml/src/ggml-cpu"
+				},
+				{
+					"build" : "_deps/whispercpp-build/src",
+					"jsonFile" : "directory-_deps.whispercpp-build.src-Debug-65ad5d854e2f99f842e0.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.5"
+					},
+					"parentIndex" : 1,
+					"projectIndex" : 1,
+					"source" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a/_deps/whispercpp-src/src",
+					"targetIndexes" : 
+					[
+						4
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"childIndexes" : 
+					[
+						1
+					],
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "substream_whisper",
+					"targetIndexes" : 
+					[
+						3
+					]
+				},
+				{
+					"childIndexes" : 
+					[
+						2
+					],
+					"directoryIndexes" : 
+					[
+						1,
+						5
+					],
+					"name" : "whisper.cpp",
+					"parentIndex" : 0,
+					"targetIndexes" : 
+					[
+						4
+					]
+				},
+				{
+					"directoryIndexes" : 
+					[
+						2,
+						3,
+						4
+					],
+					"name" : "ggml",
+					"parentIndex" : 1,
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 3,
+					"id" : "ggml::@8dc812d35f23b3704781",
+					"jsonFile" : "target-ggml-Debug-b504a32b8dc30d62f105.json",
+					"name" : "ggml",
+					"projectIndex" : 2
+				},
+				{
+					"directoryIndex" : 3,
+					"id" : "ggml-base::@8dc812d35f23b3704781",
+					"jsonFile" : "target-ggml-base-Debug-c1fb689d1986ab3e303b.json",
+					"name" : "ggml-base",
+					"projectIndex" : 2
+				},
+				{
+					"directoryIndex" : 3,
+					"id" : "ggml-cpu::@8dc812d35f23b3704781",
+					"jsonFile" : "target-ggml-cpu-Debug-41265829aaae03bee67f.json",
+					"name" : "ggml-cpu",
+					"projectIndex" : 2
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "substream_whisper::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-substream_whisper-Debug-a00108e97a40bda9be0a.json",
+					"name" : "substream_whisper",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 5,
+					"id" : "whisper::@1c8dd6753170a826aa63",
+					"jsonFile" : "target-whisper-Debug-94c1b322a2c030183f92.json",
+					"name" : "whisper",
+					"projectIndex" : 1
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "C:/Users/User/sub-stream/android/app/.cxx/Debug/3w5j3t6g/arm64-v8a",
+		"source" : "C:/Users/User/sub-stream/android/app/src/main/cpp"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}
