@@ -22,6 +22,7 @@ const REALTIME_SAMPLE_RATE = 24000;
 const REALTIME_FRAME_SECONDS = 0.05;
 const ACTIVE_AUDIO_RMS = 0.005;
 let chunkBuffer = new Float32Array(0);
+let chunkBufferStartTs = null;
 let chunkSeq = 0;
 let usageMsBuffer = 0;
 let usageFlushTimer = null;
@@ -239,9 +240,17 @@ function reconnectSocketForConfig() {
 
 function sendChunkIfReady() {
   const frameSamples = targetFrameSamples();
+  const sampleRate = targetSampleRate();
   while (chunkBuffer.length >= frameSamples) {
     const chunk = chunkBuffer.slice(0, frameSamples);
     chunkBuffer = chunkBuffer.slice(frameSamples);
+
+    // The start timestamp for THIS chunk is the buffer start.
+    const capturedAt = chunkBufferStartTs || (Date.now() / 1000);
+
+    // The NEXT chunk starts after this one finishes.
+    chunkBufferStartTs = capturedAt + (frameSamples / sampleRate);
+
     const rms = audioRms(chunk);
     const pcm16 = float32ToInt16(chunk);
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -250,7 +259,7 @@ function sendChunkIfReady() {
         ws.send(JSON.stringify({
           type: 'chunk',
           chunkId,
-          capturedAt: Date.now() / 1000
+          capturedAt
         }));
       }
       ws.send(pcm16.buffer);
@@ -298,6 +307,10 @@ async function start(streamId, incomingSettings) {
     const mono = new Float32Array(ch0.length);
     for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
     const resampled = resample(mono, audioContext.sampleRate, targetSampleRate());
+
+    if (chunkBuffer.length === 0) {
+      chunkBufferStartTs = Date.now() / 1000;
+    }
     chunkBuffer = concatFloat32(chunkBuffer, resampled);
     sendChunkIfReady();
   };
@@ -334,6 +347,7 @@ async function stop() {
   passthroughGain = null;
   ws = null;
   chunkBuffer = new Float32Array(0);
+  chunkBufferStartTs = null;
   chunkSeq = 0;
 }
 

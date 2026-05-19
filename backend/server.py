@@ -919,8 +919,8 @@ class ChunkItem:
     client_chunk_id: int | None = None
 
 
-def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
-    """Returns (raw_text, detected_lang)."""
+def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
+    """Returns (raw_text, detected_lang, start, end)."""
     return transcribe_chunk_local(session, pcm_int16)
 
 
@@ -974,10 +974,10 @@ def apply_config(session: Session, cfg: dict) -> None:
     session.task = cfg.get("task", session.task) or "transcribe"
 
 
-def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
-    """Returns (raw_text, detected_lang) from local faster-whisper."""
+def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
+    """Returns (raw_text, detected_lang, start, end) from local faster-whisper."""
     if pcm_int16.size == 0:
-        return "", session.source_lang or "auto"
+        return "", session.source_lang or "auto", None, None
     audio = pcm_int16.astype(np.float32) / 32768.0
     model = get_model()
     lang = None if session.source_lang in (None, "", "auto") else session.source_lang
@@ -1001,9 +1001,16 @@ def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str
         compression_ratio_threshold=2.4,
         log_prob_threshold=-1.0,
     )
-    parts = [seg.text for seg in segments]
+    parts = []
+    start = None
+    end = None
+    for seg in segments:
+        if start is None:
+            start = seg.start
+        end = seg.end
+        parts.append(seg.text)
     text = "".join(parts).strip()
-    return text, (info.language if info and info.language else (lang or "auto"))
+    return text, (info.language if info and info.language else (lang or "auto")), start, end
 
 
 def pcm_to_wav_file(pcm_int16: np.ndarray, sample_rate: int) -> io.BytesIO:
@@ -1073,8 +1080,16 @@ async def _handle_chunk(
         }))
         return
 
-    raw, detected = await loop.run_in_executor(None, transcribe_chunk, session, pcm)
+    raw, detected, s_rel, e_rel = await loop.run_in_executor(None, transcribe_chunk, session, pcm)
     emitted_at = time.time()
+
+    # Calculate absolute timestamps based on when the chunk was captured.
+    # We prefer captured_at if provided by the client, otherwise we fall back
+    # to a best-effort estimate based on arrival time and current lag.
+    captured_at_val = captured_at if captured_at else (emitted_at - lag)
+    s_abs = captured_at_val + s_rel if s_rel is not None else None
+    e_abs = captured_at_val + e_rel if e_rel is not None else None
+
     if not raw:
         log.info("chunk #%d: empty transcript (lang=%s) rms=%.4f peak=%.3f",
                  cid, detected, rms, peak)
@@ -1083,6 +1098,8 @@ async def _handle_chunk(
             "text": "", "raw": "",
             "chunkId": cid, "isFinal": True, "empty": True,
             "transcriptEmittedAt": emitted_at,
+            "segmentStartTs": s_abs,
+            "segmentEndTs": e_abs,
             "sync": sync_payload(session.sync_tracker.current_snapshot()),
         }))
         return
@@ -1097,6 +1114,8 @@ async def _handle_chunk(
             "text": "", "raw": raw,
             "chunkId": cid, "isFinal": True, "filtered": "hallucination",
             "transcriptEmittedAt": emitted_at,
+            "segmentStartTs": s_abs,
+            "segmentEndTs": e_abs,
             "sync": sync_payload(session.sync_tracker.current_snapshot()),
         }, ensure_ascii=False))
         return
@@ -1129,6 +1148,8 @@ async def _handle_chunk(
         "detectedLang": detected,
         "chunkId": cid, "isFinal": True,
         "transcriptEmittedAt": emitted_at,
+        "segmentStartTs": s_abs,
+        "segmentEndTs": e_abs,
         "sync": sync_payload(snapshot),
     }, ensure_ascii=False))
 
@@ -1333,15 +1354,32 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             audio_bytes_sent = 0
             raw_transcript_parts: list[str] = []
 
+            phrase_start_ts: float | None = None
+
             async def send_realtime_caption(text: str, *, is_final: bool = False, delta: str | None = None) -> None:
+                nonlocal phrase_start_ts
+                now = time.time()
+                if not phrase_start_ts:
+                    phrase_start_ts = now
+
+                # Realtime best-effort timestamps.
+                # Start is when the first delta of this phrase arrived.
+                # End is 'now' for deltas, or estimated for final.
+                s_abs = phrase_start_ts
+                e_abs = now + 1.5 if not is_final else now + 0.5
+
                 payload = {
                     "type": "transcript",
                     "text": text,
                     "isFinal": is_final,
                     "mode": REALTIME_TRANSCRIBER,
+                    "segmentStartTs": s_abs,
+                    "segmentEndTs": e_abs,
                 }
                 if delta is not None:
                     payload["delta"] = delta
+                if is_final:
+                    phrase_start_ts = None
                 await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
             async def clear_after_idle() -> None:
