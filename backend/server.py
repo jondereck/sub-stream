@@ -1087,8 +1087,11 @@ async def _handle_chunk(
     # We prefer captured_at if provided by the client, otherwise we fall back
     # to a best-effort estimate based on arrival time and current lag.
     captured_at_val = captured_at if captured_at else (emitted_at - lag)
-    s_abs = captured_at_val + s_rel if s_rel is not None else None
-    e_abs = captured_at_val + e_rel if e_rel is not None else None
+    s_abs = captured_at_val + s_rel if s_rel is not None else captured_at_val
+    e_abs = captured_at_val + e_rel if e_rel is not None else (captured_at_val + (pcm.size / session.sample_rate))
+
+    log.info("chunk #%d: receivedAt=%.3f capturedAt=%.3f startTs=%.3f endTs=%.3f",
+             cid, arrived_at, captured_at_val, s_abs, e_abs)
 
     if not raw:
         log.info("chunk #%d: empty transcript (lang=%s) rms=%.4f peak=%.3f",
@@ -1097,6 +1100,7 @@ async def _handle_chunk(
             "type": "transcript",
             "text": "", "raw": "",
             "chunkId": cid, "isFinal": True, "empty": True,
+            "receivedAt": arrived_at,
             "transcriptEmittedAt": emitted_at,
             "segmentStartTs": s_abs,
             "segmentEndTs": e_abs,
@@ -1113,6 +1117,7 @@ async def _handle_chunk(
             "type": "transcript",
             "text": "", "raw": raw,
             "chunkId": cid, "isFinal": True, "filtered": "hallucination",
+            "receivedAt": arrived_at,
             "transcriptEmittedAt": emitted_at,
             "segmentStartTs": s_abs,
             "segmentEndTs": e_abs,
@@ -1133,12 +1138,14 @@ async def _handle_chunk(
     emitted_at = time.time()
     snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
     log.info(
-        "chunk #%d [%s->%s] raw=%r out=%r latency=%.3fs auto_offset=%.3fs",
+        "chunk #%d [%s->%s] raw=%r out=%r start=%.3f end=%.3f latency=%.3fs auto_offset=%.3fs",
         cid,
         src,
         session.target_lang,
         raw,
         out,
+        s_abs,
+        e_abs,
         snapshot.rolling_avg_latency_s,
         snapshot.recommended_auto_offset_s,
     )
@@ -1147,6 +1154,7 @@ async def _handle_chunk(
         "text": out, "raw": raw,
         "detectedLang": detected,
         "chunkId": cid, "isFinal": True,
+        "receivedAt": arrived_at,
         "transcriptEmittedAt": emitted_at,
         "segmentStartTs": s_abs,
         "segmentEndTs": e_abs,
@@ -1355,12 +1363,15 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             raw_transcript_parts: list[str] = []
 
             phrase_start_ts: float | None = None
+            rt_chunk_id = 0
 
             async def send_realtime_caption(text: str, *, is_final: bool = False, delta: str | None = None) -> None:
-                nonlocal phrase_start_ts
+                nonlocal phrase_start_ts, rt_chunk_id
                 now = time.time()
                 if not phrase_start_ts:
                     phrase_start_ts = now
+
+                rt_chunk_id += 1
 
                 # Realtime best-effort timestamps.
                 # Start is when the first delta of this phrase arrived.
@@ -1368,11 +1379,16 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 s_abs = phrase_start_ts
                 e_abs = now + 1.5 if not is_final else now + 0.5
 
+                log.info("realtime transcript emitted: text=%r chunkId=%d start=%.3f end=%.3f",
+                         text, rt_chunk_id, s_abs, e_abs)
+
                 payload = {
                     "type": "transcript",
                     "text": text,
                     "isFinal": is_final,
                     "mode": REALTIME_TRANSCRIBER,
+                    "chunkId": rt_chunk_id,
+                    "receivedAt": now,
                     "segmentStartTs": s_abs,
                     "segmentEndTs": e_abs,
                 }

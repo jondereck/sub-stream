@@ -719,6 +719,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 delta: msg.delta,
                 isFinal: msg.isFinal,
                 mode: msg.mode,
+                chunkId: msg.chunkId,
+                receivedAt: msg.receivedAt,
                 receivedAtMs,
                 segmentStartTs: msg.segmentStartTs,
                 segmentEndTs: msg.segmentEndTs,

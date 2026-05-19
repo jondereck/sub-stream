@@ -172,6 +172,9 @@ function openSocket() {
           isFinal: !!data.isFinal,
           mode: data.mode,
           chunkId: data.chunkId,
+          receivedAt: data.receivedAt,
+          segmentStartTs: data.segmentStartTs,
+          segmentEndTs: data.segmentEndTs,
           transcriptEmittedAt: data.transcriptEmittedAt,
           sync: data.sync
         });
