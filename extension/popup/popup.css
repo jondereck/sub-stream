@@ -259,6 +259,62 @@ button.stop .spinner {
   font-size: 11px;
 }
 
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.inline-reset {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.inline-reset:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.sync-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.sync-metrics div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-strong);
+}
+
+.sync-metrics span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.sync-metrics strong {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .settings select,
 .settings input[type="text"],
 .settings input[type="password"],
@@ -276,6 +332,7 @@ button.stop .spinner {
 
 .settings select:disabled,
 .settings input:disabled,
+.inline-reset:disabled,
 .advanced input:disabled,
 .api-key-actions button:disabled {
   cursor: not-allowed;
@@ -311,7 +368,7 @@ button.stop .spinner {
 
 .api-key-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 

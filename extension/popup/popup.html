@@ -91,14 +91,42 @@
             Position
             <select id="position">
               <option value="bottom" selected>Bottom</option>
+              <option value="middle">Middle</option>
               <option value="top">Top</option>
             </select>
           </label>
 
           <label>
-            Audio sync delay <span id="audioDelayVal">0.0</span>s
-            <input type="range" id="audioDelay" min="0" max="6000" step="100" value="0" />
+            <span class="setting-row">
+              <span>Manual offset <span id="subtitleDelayVal">0.0s</span></span>
+              <button id="resetSubtitleDelay" class="inline-reset" type="button">Reset to 0.0s</button>
+            </span>
+            <input type="range" id="subtitleDelay" min="-10000" max="10000" step="100" value="0" />
+            <span class="field-help">Range -10.0s to +10.0s. Adjusts subtitle timing only.</span>
           </label>
+
+          <label>
+            Visible duration <span id="subtitleDurationVal">2.6s</span>
+            <input type="range" id="subtitleDuration" min="1200" max="8000" step="100" value="2600" />
+            <span class="field-help">Controls how long each shown subtitle stays readable.</span>
+          </label>
+
+          <label>
+            Sync mode
+            <select id="syncMode">
+              <option value="auto_local_whisper" selected>Auto sync for Local Whisper</option>
+              <option value="manual">Manual only</option>
+            </select>
+          </label>
+
+          <div class="sync-metrics" aria-live="polite">
+            <div><span>Auto sync</span><strong id="syncAutoState">Off</strong></div>
+            <div><span>Measured lag</span><strong id="syncMeasuredLag">0.0s</strong></div>
+            <div><span>Saved auto</span><strong id="syncSavedOffset">0.0s</strong></div>
+            <div><span>Live auto</span><strong id="syncLiveOffset">0.0s</strong></div>
+            <div><span>Total auto</span><strong id="syncAutoOffset">0.0s</strong></div>
+            <div><span>Effective offset</span><strong id="syncEffectiveOffset">0.0s</strong></div>
+          </div>
         </div>
       </section>
 
@@ -156,6 +184,7 @@
           <div class="api-key-actions">
             <button id="saveApiKey" type="button">Save Key</button>
             <button id="testApiKey" type="button">Test Connection</button>
+            <button id="clearApiKey" type="button">Clear Saved Key</button>
           </div>
           <p id="apiKeyStatus" class="api-key-status">Key status unknown</p>
         </div>

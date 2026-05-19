@@ -8,7 +8,6 @@ let audioContext = null;
 let sourceNode = null;
 let processorNode = null;
 let passthroughGain = null;
-let audioDelayNode = null;
 let ws = null;
 let settings = null;
 let isRunning = false;          // true between start() and stop()
@@ -16,7 +15,6 @@ let reconnectAttempts = 0;
 let reconnectTimer = null;
 let reconnectingForConfig = false;
 const MAX_RECONNECT_DELAY_MS = 5000;
-const MAX_AUDIO_DELAY_MS = 8000;
 
 // Realtime Cloud sends tiny 24kHz frames. Local Whisper adapts chunk size by model.
 const LOCAL_SAMPLE_RATE = 16000;
@@ -100,7 +98,9 @@ function buildConfigMessage() {
     targetLang: (settings && settings.targetLang) || 'ar',
     realtimeLatency: (settings && settings.realtimeLatency) || 'balanced',
     task: (settings && settings.task) || 'translate',
-    transcriber: currentTranscriber()
+    transcriber: currentTranscriber(),
+    model: (settings && settings.model) || 'base',
+    device: (settings && settings.device) || 'cpu'
   };
 }
 
@@ -169,7 +169,10 @@ function openSocket() {
           text: data.text,
           delta: data.delta,
           isFinal: !!data.isFinal,
-          mode: data.mode
+          mode: data.mode,
+          chunkId: data.chunkId,
+          transcriptEmittedAt: data.transcriptEmittedAt,
+          sync: data.sync
         });
       } else if (data.type === 'error') {
         chrome.runtime.sendMessage({
@@ -239,7 +242,7 @@ function sendChunkIfReady() {
   while (chunkBuffer.length >= frameSamples) {
     const chunk = chunkBuffer.slice(0, frameSamples);
     chunkBuffer = chunkBuffer.slice(frameSamples);
-    if (isRealtimeMode() && audioRms(chunk) < ACTIVE_AUDIO_RMS) continue;
+    const rms = audioRms(chunk);
     const pcm16 = float32ToInt16(chunk);
     if (ws && ws.readyState === WebSocket.OPEN) {
       if (!isRealtimeMode()) {
@@ -251,23 +254,11 @@ function sendChunkIfReady() {
         }));
       }
       ws.send(pcm16.buffer);
-      if (isRealtimeMode()) {
+      if (isRealtimeMode() && rms >= ACTIVE_AUDIO_RMS) {
         trackActiveUsage((pcm16.length / targetSampleRate()) * 1000);
       }
     }
   }
-}
-
-function getAudioDelayMs() {
-  const raw = settings && Number(settings.audioDelayMs);
-  if (!Number.isFinite(raw)) return 0;
-  return Math.max(0, Math.min(MAX_AUDIO_DELAY_MS, raw));
-}
-
-function applyAudioDelay() {
-  if (!audioContext || !audioDelayNode) return;
-  const seconds = getAudioDelayMs() / 1000;
-  audioDelayNode.delayTime.setTargetAtTime(seconds, audioContext.currentTime, 0.03);
 }
 
 async function start(streamId, incomingSettings) {
@@ -292,12 +283,9 @@ async function start(streamId, incomingSettings) {
   sourceNode = audioContext.createMediaStreamSource(mediaStream);
 
   // Keep the user hearing the tab audio (capture mutes the tab by default).
-  // The delay node lets users manually sync late subtitles by delaying audio.
   passthroughGain = audioContext.createGain();
   passthroughGain.gain.value = 1.0;
-  audioDelayNode = audioContext.createDelay(MAX_AUDIO_DELAY_MS / 1000);
-  sourceNode.connect(passthroughGain).connect(audioDelayNode).connect(audioContext.destination);
-  applyAudioDelay();
+  sourceNode.connect(passthroughGain).connect(audioContext.destination);
 
   // Mono mixdown + buffer for realtime streaming or chunked send.
   // ScriptProcessorNode is deprecated but works reliably in offscreen contexts
@@ -335,7 +323,6 @@ async function stop() {
   try { if (processorNode) processorNode.disconnect(); } catch (e) {}
   try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
   try { if (passthroughGain) passthroughGain.disconnect(); } catch (e) {}
-  try { if (audioDelayNode) audioDelayNode.disconnect(); } catch (e) {}
   try { if (audioContext) await audioContext.close(); } catch (e) {}
   try { if (mediaStream) mediaStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { if (ws && ws.readyState === WebSocket.OPEN) ws.close(); } catch (e) {}
@@ -345,7 +332,6 @@ async function stop() {
   sourceNode = null;
   processorNode = null;
   passthroughGain = null;
-  audioDelayNode = null;
   ws = null;
   chunkBuffer = new Float32Array(0);
   chunkSeq = 0;
@@ -366,7 +352,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const oldBackendUrl = (settings && settings.backendUrl) || 'ws://127.0.0.1:8765/ws';
         if (currentTranscriber() === 'openai-realtime') await flushActiveUsage();
         settings = { ...(settings || {}), ...(msg.settings || {}) };
-        applyAudioDelay();
         const nextBackendUrl = (settings && settings.backendUrl) || 'ws://127.0.0.1:8765/ws';
         if (oldTranscriber !== currentTranscriber() || oldBackendUrl !== nextBackendUrl) {
           reconnectSocketForConfig();

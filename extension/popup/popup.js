@@ -17,8 +17,18 @@ const els = {
   fontSize: $('fontSize'),
   fontSizeVal: $('fontSizeVal'),
   position: $('position'),
-  audioDelay: $('audioDelay'),
-  audioDelayVal: $('audioDelayVal'),
+  subtitleDelay: $('subtitleDelay'),
+  subtitleDelayVal: $('subtitleDelayVal'),
+  subtitleDuration: $('subtitleDuration'),
+  subtitleDurationVal: $('subtitleDurationVal'),
+  resetSubtitleDelay: $('resetSubtitleDelay'),
+  syncMode: $('syncMode'),
+  syncAutoState: $('syncAutoState'),
+  syncMeasuredLag: $('syncMeasuredLag'),
+  syncAutoOffset: $('syncAutoOffset'),
+  syncSavedOffset: $('syncSavedOffset'),
+  syncLiveOffset: $('syncLiveOffset'),
+  syncEffectiveOffset: $('syncEffectiveOffset'),
   transcriber: $('transcriber'),
   backendUrl: $('backendUrl'),
   realtimeLatency: $('realtimeLatency'),
@@ -27,16 +37,19 @@ const els = {
   apiKey: $('apiKey'),
   saveApiKey: $('saveApiKey'),
   testApiKey: $('testApiKey'),
+  clearApiKey: $('clearApiKey'),
   apiKeyStatus: $('apiKeyStatus'),
 };
 
 const DEFAULTS = {
-  settingsVersion: 5,
+  settingsVersion: 8,
   sourceLang: 'auto',
   targetLang: 'en',
   fontSize: 28,
   position: 'bottom',
-  audioDelayMs: 0,
+  subtitleDelayMs: 0,
+  subtitleDurationMs: 2600,
+  syncMode: 'auto_local_whisper',
   transcriber: 'openai-realtime',
   backendUrl: 'ws://127.0.0.1:8765/ws',
   realtimeLatency: 'balanced',
@@ -45,9 +58,13 @@ const DEFAULTS = {
   device: 'cpu',
 };
 
-const LIVE_SETTINGS = new Set(['fontSize', 'position', 'audioDelayMs', 'realtimeLatency']);
-const RESTART_SETTINGS = new Set(['sourceLang', 'targetLang', 'transcriber', 'backendUrl', 'model', 'device']);
-const SETTING_FIELDS = ['sourceLang', 'targetLang', 'fontSize', 'position', 'audioDelay', 'transcriber', 'backendUrl', 'realtimeLatency', 'model', 'device'];
+const LIVE_SETTINGS = new Set(['sourceLang', 'targetLang', 'fontSize', 'position', 'subtitleDelayMs', 'subtitleDurationMs', 'syncMode', 'realtimeLatency']);
+const RESTART_SETTINGS = new Set(['transcriber', 'backendUrl', 'model', 'device']);
+const SETTING_FIELDS = ['sourceLang', 'targetLang', 'fontSize', 'position', 'subtitleDelay', 'subtitleDuration', 'syncMode', 'transcriber', 'backendUrl', 'realtimeLatency', 'model', 'device'];
+const MIN_SUBTITLE_OFFSET_MS = -10000;
+const MAX_SUBTITLE_OFFSET_MS = 10000;
+const MIN_SUBTITLE_DURATION_MS = 1200;
+const MAX_SUBTITLE_DURATION_MS = 8000;
 
 let currentSettings = null;
 let apiKeyInfo = { configured: false, source: null };
@@ -60,6 +77,8 @@ function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'
 function errorMessage(err, fallback = 'Something went wrong.') {
   if (!err) return fallback;
   if (typeof err === 'string') return err;
+  if (err.detail) return errorMessage(err.detail, fallback);
+  if (err.message && typeof err.message === 'object') return errorMessage(err.message, fallback);
   if (err.message) return err.message;
   if (err.error) return errorMessage(err.error, fallback);
   try {
@@ -80,8 +99,30 @@ function isBackendOfflineError(err) {
   );
 }
 
-function formatDelay(ms) {
-  return (Math.max(0, parseInt(ms, 10) || 0) / 1000).toFixed(1);
+function clampSubtitleDelayMs(ms) {
+  const value = parseInt(ms, 10);
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(MIN_SUBTITLE_OFFSET_MS, Math.min(MAX_SUBTITLE_OFFSET_MS, value));
+}
+
+function formatSubtitleDelay(ms) {
+  const seconds = clampSubtitleDelayMs(ms) / 1000;
+  if (seconds === 0) return '0.0s';
+  return `${seconds > 0 ? '+' : ''}${seconds.toFixed(1)}s`;
+}
+
+function clampSubtitleDurationMs(ms) {
+  const value = parseInt(ms, 10);
+  if (!Number.isFinite(value)) return DEFAULTS.subtitleDurationMs;
+  return Math.max(MIN_SUBTITLE_DURATION_MS, Math.min(MAX_SUBTITLE_DURATION_MS, value));
+}
+
+function formatSubtitleDuration(ms) {
+  return `${(clampSubtitleDurationMs(ms) / 1000).toFixed(1)}s`;
+}
+
+function formatSeconds(value) {
+  return `${(Number(value) || 0).toFixed(1)}s`;
 }
 
 function formatCost(value) {
@@ -100,6 +141,20 @@ function updateUsage(usage) {
   const rate = formatCost(usage.usdPerMinute);
   const todayMin = formatMinutes(usage.todayMs);
   els.usageMeta.textContent = `${todayMin} active min today at ${rate}/min`;
+}
+
+function updateSyncMetrics(sync) {
+  const metrics = sync || {};
+  els.syncAutoState.textContent = metrics.autoSyncOn ? 'On' : 'Off';
+  els.syncMeasuredLag.textContent = formatSeconds(metrics.rollingAvgLatencyS);
+  els.syncAutoOffset.textContent = formatSubtitleDelay((Number(metrics.autoOffsetS) || 0) * 1000);
+  if (els.syncSavedOffset) {
+    els.syncSavedOffset.textContent = formatSubtitleDelay((Number(metrics.persistedAutoOffsetS) || 0) * 1000);
+  }
+  if (els.syncLiveOffset) {
+    els.syncLiveOffset.textContent = formatSubtitleDelay((Number(metrics.liveAutoOffsetS) || 0) * 1000);
+  }
+  els.syncEffectiveOffset.textContent = formatSubtitleDelay((Number(metrics.effectiveOffsetS) || 0) * 1000);
 }
 
 function showToast(message, kind = 'ok') {
@@ -137,14 +192,25 @@ async function loadSettings() {
   if (!['fast', 'balanced', 'stable'].includes(s.realtimeLatency)) {
     s.realtimeLatency = DEFAULTS.realtimeLatency;
   }
+  if (!Object.prototype.hasOwnProperty.call(saved, 'subtitleDelayMs') && Number.isFinite(Number(saved.audioDelayMs))) {
+    s.subtitleDelayMs = saved.audioDelayMs;
+  }
+  s.subtitleDelayMs = clampSubtitleDelayMs(s.subtitleDelayMs);
+  s.subtitleDurationMs = clampSubtitleDurationMs(s.subtitleDurationMs);
+  if (!['manual', 'auto_local_whisper'].includes(s.syncMode)) {
+    s.syncMode = DEFAULTS.syncMode;
+  }
   s.settingsVersion = DEFAULTS.settingsVersion;
   els.sourceLang.value = s.sourceLang;
   els.targetLang.value = s.targetLang;
   els.fontSize.value = s.fontSize;
   els.fontSizeVal.textContent = s.fontSize;
   els.position.value = s.position;
-  els.audioDelay.value = s.audioDelayMs;
-  els.audioDelayVal.textContent = formatDelay(s.audioDelayMs);
+  els.subtitleDelay.value = s.subtitleDelayMs;
+  els.subtitleDelayVal.textContent = formatSubtitleDelay(s.subtitleDelayMs);
+  els.subtitleDuration.value = s.subtitleDurationMs;
+  els.subtitleDurationVal.textContent = formatSubtitleDuration(s.subtitleDurationMs);
+  els.syncMode.value = s.syncMode;
   els.transcriber.value = s.transcriber;
   els.backendUrl.value = s.backendUrl;
   els.realtimeLatency.value = s.realtimeLatency;
@@ -162,7 +228,9 @@ function readSettingsFromForm() {
     targetLang: els.targetLang.value,
     fontSize: parseInt(els.fontSize.value, 10),
     position: els.position.value,
-    audioDelayMs: parseInt(els.audioDelay.value, 10) || 0,
+    subtitleDelayMs: clampSubtitleDelayMs(els.subtitleDelay.value),
+    subtitleDurationMs: clampSubtitleDurationMs(els.subtitleDuration.value),
+    syncMode: els.syncMode.value === 'manual' ? 'manual' : 'auto_local_whisper',
     transcriber: els.transcriber.value,
     backendUrl: els.backendUrl.value.trim() || DEFAULTS.backendUrl,
     realtimeLatency: els.realtimeLatency.value,
@@ -226,9 +294,10 @@ function setModeStatus(text, kind = 'idle') {
 
 function apiKeySourceText(info = apiKeyInfo) {
   if (!info.configured) return 'API key required';
-  if (info.source === 'env') return '.env key active';
-  if (info.source === 'stored') return 'Saved key active';
-  return 'API key active';
+  const masked = info.masked ? ` (${info.masked})` : '';
+  if (info.source === '.env' || info.source === 'env') return `.env key active${masked}`;
+  if (info.source === 'saved_settings' || info.source === 'stored') return `Saved key active${masked}`;
+  return `API key active${masked}`;
 }
 
 function renderModeStatus(res = {}) {
@@ -264,6 +333,7 @@ function setControlsDisabled(disabled) {
   SETTING_FIELDS.forEach((key) => {
     if (els[key]) els[key].disabled = disabled;
   });
+  els.resetSubtitleDelay.disabled = disabled;
 }
 
 function renderSessionState(res) {
@@ -314,6 +384,7 @@ async function refresh() {
   const res = await chrome.runtime.sendMessage({ target: 'background', type: 'capture:status' });
   if (!res) return;
   updateUsage(res.aiUsage);
+  updateSyncMetrics(res.sync);
   renderSessionState(res);
 }
 
@@ -351,6 +422,7 @@ async function refreshApiKeyStatus() {
     apiKeyInfo = {
       configured: !!data.configured,
       source: data.source || null,
+      masked: data.masked || null,
     };
     els.apiKeyStatus.textContent = apiKeySourceText(apiKeyInfo);
     if (loadedSettingsVersion < DEFAULTS.settingsVersion && currentSettings) {
@@ -372,21 +444,21 @@ async function refreshApiKeyStatus() {
 async function saveApiKey() {
   const apiKey = els.apiKey.value.trim();
   if (!apiKey) {
-    els.apiKeyStatus.textContent = 'Enter an API key first';
+    els.apiKeyStatus.textContent = 'API key is empty or whitespace';
     return;
   }
   els.saveApiKey.disabled = true;
-  els.apiKeyStatus.textContent = 'Validating key...';
+  els.apiKeyStatus.textContent = 'Saving and testing key...';
   try {
-    await fetchBackend('/settings/api-key', {
+    const data = await fetchBackend('/settings/api-key', {
       method: 'POST',
       body: JSON.stringify({ apiKey, test: true }),
     });
     els.apiKey.value = '';
     await refreshApiKeyStatus();
-    showToast('API key saved');
+    showToast(data.message || 'API key saved');
   } catch (e) {
-    const message = isBackendOfflineError(e) ? 'Backend offline' : 'API key validation failed';
+    const message = isBackendOfflineError(e) ? 'Backend offline' : errorMessage(e, 'API key validation failed');
     els.apiKeyStatus.textContent = message;
     showToast(message, 'error');
   } finally {
@@ -395,27 +467,56 @@ async function saveApiKey() {
 }
 
 async function testApiKey() {
-  const apiKey = els.apiKey.value.trim();
-  if (!apiKey) {
-    els.apiKeyStatus.textContent = 'Enter an API key first';
-    showToast('Enter an API key first', 'error');
+  const rawApiKey = els.apiKey.value;
+  const apiKey = rawApiKey.trim();
+  if (!apiKey && rawApiKey.length > 0) {
+    els.apiKeyStatus.textContent = 'API key is empty or whitespace';
     return;
   }
   els.testApiKey.disabled = true;
-  els.apiKeyStatus.textContent = 'Testing connection...';
+  els.apiKeyStatus.textContent = apiKey ? 'Saving and testing key...' : 'Testing saved backend key...';
   try {
-    await fetchBackend('/settings/api-key/test', {
+    const data = await fetchBackend('/settings/api-key/test', {
       method: 'POST',
-      body: JSON.stringify({ apiKey }),
+      body: JSON.stringify({ apiKey: apiKey || null }),
     });
-    els.apiKeyStatus.textContent = 'Connection successful';
-    showToast('Connection successful');
+    if (apiKey) els.apiKey.value = '';
+    apiKeyInfo = {
+      configured: true,
+      source: data.source || apiKeyInfo.source,
+      masked: data.masked || apiKeyInfo.masked,
+    };
+    els.apiKeyStatus.textContent = data.message || 'Connection successful';
+    showToast(data.message || 'Connection successful');
   } catch (e) {
-    const message = isBackendOfflineError(e) ? 'Backend offline' : 'API key validation failed';
+    const message = isBackendOfflineError(e) ? 'Backend offline' : errorMessage(e, 'API key validation failed');
     els.apiKeyStatus.textContent = message;
     showToast(message, 'error');
   } finally {
     els.testApiKey.disabled = false;
+  }
+}
+
+async function clearApiKey() {
+  els.clearApiKey.disabled = true;
+  els.apiKeyStatus.textContent = 'Clearing saved key...';
+  try {
+    const data = await fetchBackend('/settings/api-key', { method: 'DELETE' });
+    els.apiKey.value = '';
+    apiKeyInfo = {
+      configured: !!data.configured,
+      source: data.source || null,
+      masked: data.masked || null,
+    };
+    els.apiKeyStatus.textContent = apiKeySourceText(apiKeyInfo);
+    showToast(data.message || 'Saved API key cleared');
+    renderModeStatus();
+  } catch (e) {
+    const message = isBackendOfflineError(e) ? 'Backend offline' : errorMessage(e, 'Failed to clear saved key');
+    els.apiKeyStatus.textContent = message;
+    showToast(message, 'error');
+  } finally {
+    els.clearApiKey.disabled = false;
   }
 }
 
@@ -465,9 +566,21 @@ els.fontSize.addEventListener('input', () => {
   els.fontSizeVal.textContent = els.fontSize.value;
   debounceSettingsApply(false);
 });
-els.audioDelay.addEventListener('input', () => {
-  els.audioDelayVal.textContent = formatDelay(els.audioDelay.value);
+els.subtitleDelay.addEventListener('input', () => {
+  els.subtitleDelayVal.textContent = formatSubtitleDelay(els.subtitleDelay.value);
   debounceSettingsApply(false);
+});
+els.subtitleDuration.addEventListener('input', () => {
+  els.subtitleDurationVal.textContent = formatSubtitleDuration(els.subtitleDuration.value);
+  debounceSettingsApply(false);
+});
+els.syncMode.addEventListener('change', () => {
+  debounceSettingsApply(false);
+});
+els.resetSubtitleDelay.addEventListener('click', () => {
+  els.subtitleDelay.value = '0';
+  els.subtitleDelayVal.textContent = formatSubtitleDelay(0);
+  saveAndBroadcastSettings({ restartRequired: false, force: true }).catch(() => {});
 });
 els.position.addEventListener('change', () => {
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
@@ -475,7 +588,12 @@ els.position.addEventListener('change', () => {
 els.realtimeLatency.addEventListener('change', () => {
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
-['sourceLang', 'targetLang', 'transcriber', 'backendUrl', 'model', 'device'].forEach((key) => {
+['sourceLang', 'targetLang'].forEach((key) => {
+  els[key].addEventListener('change', () => {
+    saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+  });
+});
+['transcriber', 'backendUrl', 'model', 'device'].forEach((key) => {
   els[key].addEventListener('change', () => {
     showToast('Applying new settings...');
     debounceSettingsApply(true);
@@ -488,6 +606,7 @@ els.resetUsage.addEventListener('click', async () => {
 });
 els.saveApiKey.addEventListener('click', saveApiKey);
 els.testApiKey.addEventListener('click', testApiKey);
+els.clearApiKey.addEventListener('click', clearApiKey);
 
 loadSettings().then(async () => {
   await refresh();

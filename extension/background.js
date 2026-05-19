@@ -5,7 +5,16 @@
 const OFFSCREEN_DOC = 'offscreen.html';
 const NATIVE_HOST   = 'com.kamisubs.host';
 const AI_USAGE_KEY = 'aiUsageEstimate';
+const CALIBRATIONS_KEY = 'substream.calibrations.v1';
 const REALTIME_TRANSLATE_USD_PER_MIN = 0.034;
+const SYNC_MODE_MANUAL = 'manual';
+const SYNC_MODE_AUTO_LOCAL_WHISPER = 'auto_local_whisper';
+const LOCAL_WHISPER_ENGINE = 'local-whisper';
+const MIN_AUTO_STEP_CHANGE_MS = 200;
+const MIN_CALIBRATION_SAMPLES = 8;
+const MIN_CALIBRATION_SAVE_CHANGE_S = 0.1;
+const MIN_SUBTITLE_OFFSET_MS = -10000;
+const MAX_SUBTITLE_OFFSET_MS = 10000;
 
 let activeTabId = null;
 let isCapturing = false;
@@ -14,6 +23,10 @@ let wsState = 'idle';           // idle | applying | connecting | connected | er
 let backendState = 'unknown';   // unknown | starting | up | down | error | unavailable
 let backendInfo = {};           // { pid?, wsUrl?, lastError? }
 let nativePort = null;          // chrome.runtime.Port to native host, or null
+let syncMetrics = emptySyncMetrics();
+let activeSettings = null;
+let activeCalibrationKey = null;
+let activeCalibrationProfile = null;
 
 function setAppState(nextState) {
   appState = nextState;
@@ -30,6 +43,181 @@ function errorMessage(err, fallback = 'Something went wrong.') {
   } catch (e) {
     return fallback;
   }
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function emptySyncMetrics() {
+  return {
+    sampleCount: 0,
+    rollingAvgLatencyS: 0,
+    recommendedAutoOffsetS: 0,
+    persistedAutoOffsetS: 0,
+    liveAutoOffsetS: 0,
+    autoOffsetS: 0,
+    manualOffsetS: 0,
+    effectiveOffsetS: 0,
+    updatedAt: 0,
+    autoSyncOn: false,
+  };
+}
+
+function syncMode(settings) {
+  return settings && settings.syncMode === SYNC_MODE_AUTO_LOCAL_WHISPER
+    ? SYNC_MODE_AUTO_LOCAL_WHISPER
+    : SYNC_MODE_MANUAL;
+}
+
+function manualOffsetS(settings) {
+  const raw = Number(settings && settings.subtitleDelayMs);
+  const offsetMs = Number.isFinite(raw) ? raw : 0;
+  return clamp(offsetMs, MIN_SUBTITLE_OFFSET_MS, MAX_SUBTITLE_OFFSET_MS) / 1000;
+}
+
+function autoSyncEnabled(settings, backendSync) {
+  return (
+    syncMode(settings) === SYNC_MODE_AUTO_LOCAL_WHISPER &&
+    settings &&
+    settings.transcriber === 'local' &&
+    backendSync &&
+    backendSync.engine === LOCAL_WHISPER_ENGINE
+  );
+}
+
+function engineForSettings(settings) {
+  return settings && settings.transcriber === 'local' ? LOCAL_WHISPER_ENGINE : settings && settings.transcriber;
+}
+
+function calibrationKey(settings) {
+  const engine = engineForSettings(settings) || 'default';
+  const model = (settings && settings.model) || 'default';
+  const device = (settings && settings.device) || 'default';
+  return `${engine}:${model}:${device}`;
+}
+
+async function loadCalibrationMap() {
+  const stored = await chrome.storage.local.get(CALIBRATIONS_KEY);
+  return stored[CALIBRATIONS_KEY] || {};
+}
+
+async function loadCalibrationProfile(settings) {
+  const key = calibrationKey(settings);
+  const map = await loadCalibrationMap();
+  const profile = map[key] || null;
+  activeCalibrationKey = key;
+  activeCalibrationProfile = profile;
+  syncMetrics = {
+    ...syncMetrics,
+    persistedAutoOffsetS: autoSyncOnForSettings(settings) ? Number(profile && profile.learnedOffsetS) || 0 : 0,
+    liveAutoOffsetS: 0,
+    autoOffsetS: autoSyncOnForSettings(settings) ? Number(profile && profile.learnedOffsetS) || 0 : 0,
+  };
+  recomputeSyncMetrics(settings);
+  return profile;
+}
+
+async function ensureCalibrationForSettings(settings) {
+  if (!settings) return null;
+  const key = calibrationKey(settings);
+  if (activeCalibrationKey === key) {
+    return activeCalibrationProfile;
+  }
+  return loadCalibrationProfile(settings);
+}
+
+async function saveCalibrationProfile(profile) {
+  const map = await loadCalibrationMap();
+  map[profile.key] = profile;
+  await chrome.storage.local.set({ [CALIBRATIONS_KEY]: map });
+  activeCalibrationProfile = profile;
+}
+
+function autoSyncOnForSettings(settings) {
+  return !!(
+    settings &&
+    settings.transcriber === 'local' &&
+    syncMode(settings) === SYNC_MODE_AUTO_LOCAL_WHISPER
+  );
+}
+
+function recomputeSyncMetrics(settings) {
+  const manual = manualOffsetS(settings);
+  const useAuto = autoSyncOnForSettings(settings);
+  const persistedAuto = useAuto ? Number(syncMetrics.persistedAutoOffsetS) || 0 : 0;
+  const liveAuto = useAuto ? Number(syncMetrics.liveAutoOffsetS) || 0 : 0;
+  const auto = persistedAuto + liveAuto;
+  syncMetrics = {
+    ...syncMetrics,
+    persistedAutoOffsetS: persistedAuto,
+    liveAutoOffsetS: liveAuto,
+    autoOffsetS: auto,
+    manualOffsetS: manual,
+    effectiveOffsetS: clamp(manual + auto, MIN_SUBTITLE_OFFSET_MS / 1000, MAX_SUBTITLE_OFFSET_MS / 1000),
+    autoSyncOn: useAuto,
+  };
+  return syncMetrics;
+}
+
+async function persistCalibrationIfNeeded(settings, backendSync, learnedOffsetS) {
+  if (!autoSyncEnabled(settings, backendSync)) return;
+  const sampleCount = Number(backendSync.sampleCount) || 0;
+  if (sampleCount < MIN_CALIBRATION_SAMPLES) return;
+
+  const previous = activeCalibrationProfile;
+  if (previous && Math.abs((Number(previous.learnedOffsetS) || 0) - learnedOffsetS) < MIN_CALIBRATION_SAVE_CHANGE_S) {
+    return;
+  }
+
+  const key = activeCalibrationKey || calibrationKey(settings);
+  const profile = {
+    key,
+    engine: LOCAL_WHISPER_ENGINE,
+    whisperModel: (settings && settings.model) || 'default',
+    device: (settings && settings.device) || 'default',
+    learnedOffsetS,
+    lastRollingAvgLatencyS: Number(backendSync.rollingAvgLatencyS) || 0,
+    sampleCount,
+    updatedAt: Number(backendSync.updatedAt) || Date.now() / 1000,
+  };
+
+  await saveCalibrationProfile(profile);
+  syncMetrics = {
+    ...syncMetrics,
+    persistedAutoOffsetS: learnedOffsetS,
+    liveAutoOffsetS: 0,
+    autoOffsetS: learnedOffsetS,
+  };
+}
+
+async function updateSyncMetrics(backendSync, settings) {
+  if (!backendSync) return recomputeSyncMetrics(settings);
+
+  const recommended = Number(backendSync.recommendedAutoOffsetS);
+  const persistedAuto = Number(syncMetrics.persistedAutoOffsetS) || 0;
+  let nextLiveAuto = syncMetrics.liveAutoOffsetS;
+  if (autoSyncEnabled(settings, backendSync) && Number.isFinite(recommended)) {
+    const measuredDelta = recommended - persistedAuto;
+    if (Math.abs(measuredDelta - syncMetrics.liveAutoOffsetS) * 1000 >= MIN_AUTO_STEP_CHANGE_MS) {
+      nextLiveAuto = measuredDelta;
+    }
+  } else {
+    nextLiveAuto = 0;
+  }
+
+  syncMetrics = {
+    ...syncMetrics,
+    sampleCount: Number(backendSync.sampleCount) || 0,
+    rollingAvgLatencyS: Number(backendSync.rollingAvgLatencyS) || 0,
+    recommendedAutoOffsetS: Number.isFinite(recommended) ? recommended : 0,
+    liveAutoOffsetS: nextLiveAuto,
+    updatedAt: Number(backendSync.updatedAt) || Date.now() / 1000,
+  };
+  if (Number.isFinite(recommended)) {
+    await persistCalibrationIfNeeded(settings, backendSync, recommended);
+  }
+  return recomputeSyncMetrics(settings);
 }
 
 function todayKey() {
@@ -110,6 +298,13 @@ async function resetAiUsage() {
 
 async function getAiUsageSnapshot() {
   return usageSnapshot(await readUsage());
+}
+
+async function getActiveSettings() {
+  if (activeSettings) return activeSettings;
+  const stored = await chrome.storage.local.get('settings');
+  activeSettings = stored.settings || {};
+  return activeSettings;
 }
 
 async function addActiveAiUsage(activeMs, transcriber) {
@@ -292,6 +487,9 @@ async function startCapture(tabId, settings) {
     throw new Error('Session is already changing state.');
   }
   setAppState('starting');
+  activeSettings = settings || {};
+  syncMetrics = emptySyncMetrics();
+  await loadCalibrationProfile(activeSettings);
   // Best-effort: try to spawn the backend before we start capturing. If the
   // native host isn't installed, fall through — user may have launched it
   // manually, in which case the WS connect still works.
@@ -333,7 +531,11 @@ async function startCapture(tabId, settings) {
 
     // Tell the content script in that tab to mount the overlay
     try {
-      await chrome.tabs.sendMessage(tabId, { type: 'overlay:mount', settings });
+      await chrome.tabs.sendMessage(tabId, {
+        type: 'overlay:mount',
+        settings,
+        sync: recomputeSyncMetrics(settings)
+      });
     } catch (e) {
       console.warn('[sub-stream-ai] could not message content script yet:', e);
     }
@@ -362,6 +564,10 @@ async function stopCapture(options = {}) {
   stopBackend();
   isCapturing = false;
   wsState = 'idle';
+  syncMetrics = emptySyncMetrics();
+  activeSettings = null;
+  activeCalibrationKey = null;
+  activeCalibrationProfile = null;
   await chrome.storage.local.set({ isCapturing: false, activeTabId: null });
   activeTabId = null;
   setAppState('idle');
@@ -369,6 +575,16 @@ async function stopCapture(options = {}) {
 
 async function applySettings(settings, restartRequired) {
   await chrome.storage.local.set({ settings });
+  const previousSettings = activeSettings;
+  activeSettings = settings || activeSettings;
+  const calibrationChanged =
+    !previousSettings ||
+    calibrationKey(previousSettings) !== calibrationKey(activeSettings) ||
+    syncMode(previousSettings) !== syncMode(activeSettings);
+  if (calibrationChanged) {
+    await loadCalibrationProfile(activeSettings);
+  }
+  recomputeSyncMetrics(activeSettings);
   if (!isCapturing || !restartRequired) {
     if (isCapturing) {
       if (settings.transcriber === 'openai-realtime') {
@@ -391,7 +607,8 @@ async function applySettings(settings, restartRequired) {
       try {
         await chrome.tabs.sendMessage(activeTabId, {
           type: 'overlay:update',
-          settings
+          settings,
+          sync: recomputeSyncMetrics(settings)
         });
       } catch (e) { /* tab may be gone or content script unavailable */ }
     }
@@ -439,6 +656,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'capture:status': {
+          const settings = await getActiveSettings();
+          await ensureCalibrationForSettings(settings);
           sendResponse({
             appState,
             isCapturing,
@@ -446,7 +665,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             wsState,
             backendState,
             backendInfo,
-            aiUsage: await getAiUsageSnapshot()
+            aiUsage: await getAiUsageSnapshot(),
+            sync: recomputeSyncMetrics(settings)
           });
           break;
         }
@@ -487,6 +707,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'transcript': {
+          const receivedAtMs = Date.now();
+          const settings = await getActiveSettings();
+          const nextSyncMetrics = await updateSyncMetrics(msg.sync, settings);
           // Forward transcript from offscreen -> content script overlay
           if (activeTabId != null) {
             try {
@@ -495,7 +718,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 text: msg.text,
                 delta: msg.delta,
                 isFinal: msg.isFinal,
-                mode: msg.mode
+                mode: msg.mode,
+                receivedAtMs,
+                sync: nextSyncMetrics,
+                effectiveOffsetMs: Math.round(nextSyncMetrics.effectiveOffsetS * 1000)
               });
             } catch (e) { /* ignore */ }
           }

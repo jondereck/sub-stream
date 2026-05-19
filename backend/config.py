@@ -14,7 +14,7 @@ if load_dotenv:
     load_dotenv(_backend_dir / ".env", override=True)
 
 # Transcription engine:
-#   "openai-realtime" streams audio to OpenAI Realtime Translation.
+#   "openai-realtime" streams audio to OpenAI Realtime transcription.
 #   "local" uses faster-whisper.
 TRANSCRIBER = os.getenv("KAMI_TRANSCRIBER", "local").strip().lower()
 
@@ -39,7 +39,7 @@ HOST = os.getenv("KAMI_HOST", "127.0.0.1")
 PORT = int(os.getenv("KAMI_PORT", "8765"))
 
 # Chunked input audio from the extension is 16kHz mono PCM Int16.
-# Realtime translation sessions use 24kHz mono PCM Int16.
+# Realtime transcription sessions use 24kHz mono PCM Int16.
 SAMPLE_RATE = 16000
 REALTIME_SAMPLE_RATE = 24000
 
