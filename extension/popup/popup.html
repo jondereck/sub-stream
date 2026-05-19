@@ -19,9 +19,10 @@
         <button id="toggle" class="primary">Start</button>
         <div class="status-grid">
           <div id="status" class="status idle">Idle</div>
-          <div id="backendStatus" class="backend-status idle">Backend: unknown</div>
+          <div id="modeStatus" class="mode-status idle">Checking engine...</div>
         </div>
       </section>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
       <section class="usage-panel">
         <div class="usage-head">
@@ -109,7 +110,6 @@
             <select id="transcriber">
               <option value="openai-realtime" selected>Realtime Cloud (OpenAI)</option>
               <option value="local">Local Whisper</option>
-              <option value="openai">OpenAI chunked fallback</option>
             </select>
           </label>
 
@@ -140,6 +140,25 @@
           Backend URL
           <input type="text" id="backendUrl" value="ws://127.0.0.1:8765/ws" />
         </label>
+        <label>
+          Realtime latency
+          <select id="realtimeLatency">
+            <option value="fast">Fast</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="stable">Stable</option>
+          </select>
+        </label>
+        <div class="api-key-settings">
+          <label>
+            OpenAI API key
+            <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off" />
+          </label>
+          <div class="api-key-actions">
+            <button id="saveApiKey" type="button">Save Key</button>
+            <button id="testApiKey" type="button">Test Connection</button>
+          </div>
+          <p id="apiKeyStatus" class="api-key-status">Key status unknown</p>
+        </div>
       </details>
     </main>
 

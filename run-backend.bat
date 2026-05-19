@@ -18,18 +18,11 @@ if not exist "backend\.venv\Scripts\python.exe" (
   exit /b 1
 )
 
-call "backend\.venv\Scripts\activate.bat"
-if errorlevel 1 (
-  echo [ERROR] Failed to activate virtual environment.
-  pause
-  exit /b 1
-)
-
 cd backend
 echo Starting Sub Stream AI backend...
 echo Keep this window open while using subtitles.
 echo.
-python server.py
+"%~dp0backend\.venv\Scripts\python.exe" server.py
 
 echo.
 echo Backend stopped.

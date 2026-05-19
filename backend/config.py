@@ -16,16 +16,14 @@ if load_dotenv:
 # Transcription engine:
 #   "openai-realtime" streams audio to OpenAI Realtime Translation.
 #   "local" uses faster-whisper.
-#   "openai" uses chunked OpenAI speech-to-text.
-TRANSCRIBER = os.getenv("KAMI_TRANSCRIBER", "openai-realtime").strip().lower()
+TRANSCRIBER = os.getenv("KAMI_TRANSCRIBER", "local").strip().lower()
 
 # faster-whisper model: tiny | base | small | medium | large-v3
 # "base" keeps local captions closer to live on low-VRAM GPUs.
 MODEL_SIZE = os.getenv("KAMI_MODEL", "base")
 
 # "cpu" | "cuda" | "auto"
-# Default to CUDA for this local app; switch to cpu if CUDA DLLs are unavailable.
-DEVICE = os.getenv("KAMI_DEVICE", "cuda")
+DEVICE = os.getenv("KAMI_DEVICE", "cpu")
 
 # "int8" (CPU), "int8_float32" (older CUDA/low VRAM), "float16" (newer GPU), "float32"
 COMPUTE_TYPE = os.getenv(
@@ -36,9 +34,6 @@ COMPUTE_TYPE = os.getenv(
 # Translation backend: "google" (deep-translator via web, zero setup) | "none"
 # Future: "argos" for fully offline.
 TRANSLATOR = os.getenv("KAMI_TRANSLATOR", "google")
-
-# OpenAI speech-to-text model used when KAMI_TRANSCRIBER=openai.
-OPENAI_TRANSCRIBE_MODEL = os.getenv("KAMI_OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 
 HOST = os.getenv("KAMI_HOST", "127.0.0.1")
 PORT = int(os.getenv("KAMI_PORT", "8765"))

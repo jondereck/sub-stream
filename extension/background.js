@@ -9,10 +9,28 @@ const REALTIME_TRANSLATE_USD_PER_MIN = 0.034;
 
 let activeTabId = null;
 let isCapturing = false;
-let wsState = 'idle';           // idle | connecting | connected | error | closed
-let backendState = 'unknown';   // unknown | starting | up | down | unavailable
+let appState = 'idle';          // idle | starting | running | stopping | error | applying_settings
+let wsState = 'idle';           // idle | applying | connecting | connected | error | closed
+let backendState = 'unknown';   // unknown | starting | up | down | error | unavailable
 let backendInfo = {};           // { pid?, wsUrl?, lastError? }
 let nativePort = null;          // chrome.runtime.Port to native host, or null
+
+function setAppState(nextState) {
+  appState = nextState;
+}
+
+function errorMessage(err, fallback = 'Something went wrong.') {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+  if (err.message) return err.message;
+  if (err.error) return errorMessage(err.error, fallback);
+  try {
+    const json = JSON.stringify(err);
+    return json && json !== '{}' ? json : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
 
 function todayKey() {
   const now = new Date();
@@ -160,7 +178,7 @@ function connectNative() {
     nativePort = chrome.runtime.connectNative(NATIVE_HOST);
   } catch (e) {
     backendState = 'unavailable';
-    backendInfo = { lastError: String(e) };
+    backendInfo = { lastError: errorMessage(e, 'Native host unavailable.') };
     nativePort = null;
     return false;
   }
@@ -184,7 +202,7 @@ function connectNative() {
         backendInfo = { pid: msg.pid || null, wsUrl: msg.wsUrl };
         break;
       case 'error':
-        backendState = 'down';
+        backendState = 'error';
         backendInfo = { lastError: msg.message };
         console.error('[sub-stream-ai native]', msg.message);
         break;
@@ -215,11 +233,9 @@ function connectNative() {
 async function ensureBackend(settings) {
   // Already attempted and unavailable — don't keep retrying; user will start
   // the backend manually or run install.ps1.
-  if (backendState === 'unavailable') return false;
-  if (backendState === 'up' && nativePort) return true;
-
+  if (backendState === 'unavailable') return true;
   if (!nativePort) {
-    if (!connectNative()) return false;
+    if (!connectNative()) return true;
   }
 
   // Pull whisper settings off the popup settings object if present.
@@ -236,7 +252,7 @@ async function ensureBackend(settings) {
     nativePort.postMessage(startMsg);
   } catch (e) {
     backendState = 'unavailable';
-    backendInfo = { lastError: String(e) };
+    backendInfo = { lastError: errorMessage(e, 'Could not start backend.') };
     nativePort = null;
     return false;
   }
@@ -249,13 +265,18 @@ async function ensureBackend(settings) {
   await new Promise((resolve) => {
     const t0 = Date.now();
     const tick = setInterval(() => {
-      if (backendState === 'up' || backendState === 'unavailable' || Date.now() - t0 > 60000) {
+      if (
+        backendState === 'up' ||
+        backendState === 'error' ||
+        backendState === 'unavailable' ||
+        Date.now() - t0 > 60000
+      ) {
         clearInterval(tick);
         resolve();
       }
     }, 150);
   });
-  return backendState !== 'unavailable';
+  return backendState !== 'error';
 }
 
 function stopBackend() {
@@ -267,54 +288,70 @@ function stopBackend() {
 }
 
 async function startCapture(tabId, settings) {
+  if (appState === 'starting' || appState === 'stopping' || appState === 'applying_settings') {
+    throw new Error('Session is already changing state.');
+  }
+  setAppState('starting');
   // Best-effort: try to spawn the backend before we start capturing. If the
   // native host isn't installed, fall through — user may have launched it
   // manually, in which case the WS connect still works.
-  await ensureBackend(settings);
-
-  await ensureOffscreen();
-
-  // Make sure the overlay is mounted before we start sending transcripts.
   try {
-    await ensureContentScript(tabId);
-  } catch (e) {
-    console.warn('[sub-stream-ai] could not inject content script (restricted page?):', e);
-  }
+    const backendOk = await ensureBackend(settings);
+    if (!backendOk) {
+      const message = backendInfo.lastError || 'Backend failed to start.';
+      throw new Error(message);
+    }
 
-  const streamId = await new Promise((resolve, reject) => {
+    await ensureOffscreen();
+
+    // Make sure the overlay is mounted before we start sending transcripts.
+    try {
+      await ensureContentScript(tabId);
+    } catch (e) {
+      console.warn('[sub-stream-ai] could not inject content script (restricted page?):', e);
+    }
+
+    const streamId = await new Promise((resolve, reject) => {
     chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
-      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
-      resolve(id);
+        if (chrome.runtime.lastError) return reject(new Error(errorMessage(chrome.runtime.lastError, 'Could not capture tab audio.')));
+        resolve(id);
+      });
     });
-  });
 
-  await chrome.runtime.sendMessage({
-    target: 'offscreen',
-    type: 'start',
-    streamId,
-    settings
-  });
+    await chrome.runtime.sendMessage({
+      target: 'offscreen',
+      type: 'start',
+      streamId,
+      settings
+    });
 
-  activeTabId = tabId;
-  isCapturing = true;
-  wsState = 'connecting';
-  await chrome.storage.local.set({ isCapturing: true, activeTabId: tabId });
-  await startAiUsage(settings);
+    activeTabId = tabId;
+    isCapturing = true;
+    wsState = 'connecting';
+    await chrome.storage.local.set({ isCapturing: true, activeTabId: tabId });
+    await startAiUsage(settings);
 
-  // Tell the content script in that tab to mount the overlay
-  try {
-    await chrome.tabs.sendMessage(tabId, { type: 'overlay:mount', settings });
+    // Tell the content script in that tab to mount the overlay
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'overlay:mount', settings });
+    } catch (e) {
+      console.warn('[sub-stream-ai] could not message content script yet:', e);
+    }
+    setAppState('running');
   } catch (e) {
-    console.warn('[sub-stream-ai] could not message content script yet:', e);
+    setAppState('error');
+    throw e;
   }
 }
 
-async function stopCapture() {
+async function stopCapture(options = {}) {
+  const keepOverlayMounted = !!options.keepOverlayMounted;
+  if (appState !== 'applying_settings') setAppState('stopping');
   if (await hasOffscreenDocument()) {
     await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop' });
   }
   await stopAiUsage();
-  if (activeTabId != null) {
+  if (!keepOverlayMounted && activeTabId != null) {
     try {
       await chrome.tabs.sendMessage(activeTabId, { type: 'overlay:unmount' });
     } catch (e) { /* tab may be gone */ }
@@ -327,6 +364,59 @@ async function stopCapture() {
   wsState = 'idle';
   await chrome.storage.local.set({ isCapturing: false, activeTabId: null });
   activeTabId = null;
+  setAppState('idle');
+}
+
+async function applySettings(settings, restartRequired) {
+  await chrome.storage.local.set({ settings });
+  if (!isCapturing || !restartRequired) {
+    if (isCapturing) {
+      if (settings.transcriber === 'openai-realtime') {
+        const usage = await readUsage();
+        if (!usage.currentSessionActive) await startAiUsage(settings);
+      } else {
+        await stopAiUsage();
+      }
+    }
+    if (await hasOffscreenDocument()) {
+      try {
+        await chrome.runtime.sendMessage({
+          target: 'offscreen',
+          type: 'settings:update',
+          settings
+        });
+      } catch (e) { /* offscreen may not be running */ }
+    }
+    if (activeTabId != null) {
+      try {
+        await chrome.tabs.sendMessage(activeTabId, {
+          type: 'overlay:update',
+          settings
+        });
+      } catch (e) { /* tab may be gone or content script unavailable */ }
+    }
+    return { restarted: false };
+  }
+
+  const tabId = activeTabId;
+  if (tabId == null) return { restarted: false };
+  setAppState('applying_settings');
+  wsState = 'applying';
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'overlay:text',
+      text: 'Applying settings...'
+    });
+  } catch (e) { /* ignore */ }
+
+  try {
+    await stopCapture({ keepOverlayMounted: true });
+    await startCapture(tabId, settings);
+    return { restarted: true };
+  } catch (e) {
+    setAppState('error');
+    throw e;
+  }
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -350,6 +440,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         case 'capture:status': {
           sendResponse({
+            appState,
             isCapturing,
             activeTabId,
             wsState,
@@ -371,37 +462,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         case 'capture:updateSettings': {
           const settings = msg.settings || {};
-          await chrome.storage.local.set({ settings });
-          if (isCapturing) {
-            if (settings.transcriber === 'openai-realtime') {
-              const usage = await readUsage();
-              if (!usage.currentSessionActive) await startAiUsage(settings);
-            } else {
-              await stopAiUsage();
-            }
-          }
-          if (await hasOffscreenDocument()) {
-            try {
-              await chrome.runtime.sendMessage({
-                target: 'offscreen',
-                type: 'settings:update',
-                settings
-              });
-            } catch (e) { /* offscreen may not be running */ }
-          }
-          if (activeTabId != null) {
-            try {
-              await chrome.tabs.sendMessage(activeTabId, {
-                type: 'overlay:update',
-                settings
-              });
-            } catch (e) { /* tab may be gone or content script unavailable */ }
-          }
-          sendResponse({ ok: true });
+          const result = await applySettings(settings, !!msg.restartRequired);
+          sendResponse({ ok: true, ...result });
           break;
         }
         case 'ws:state': {
+          const previousState = wsState;
           wsState = msg.state;
+          if (activeTabId != null && wsState === 'applying') {
+            try {
+              await chrome.tabs.sendMessage(activeTabId, {
+                type: 'overlay:text',
+                text: 'Applying subtitle engine...'
+              });
+            } catch (e) { /* ignore */ }
+          } else if (activeTabId != null && previousState === 'applying' && wsState === 'connected') {
+            try {
+              await chrome.tabs.sendMessage(activeTabId, {
+                type: 'overlay:text',
+                text: ''
+              });
+            } catch (e) { /* ignore */ }
+          }
           break;
         }
         case 'transcript': {
@@ -420,6 +502,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case 'backend:error': {
+          wsState = 'error';
+          backendInfo = { ...backendInfo, lastError: msg.message };
           if (activeTabId != null) {
             try {
               await chrome.tabs.sendMessage(activeTabId, {
@@ -432,8 +516,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       }
     } catch (err) {
+      const message = errorMessage(err, 'Sub Stream failed.');
       console.error('[sub-stream-ai bg]', err);
-      sendResponse({ ok: false, error: String(err) });
+      sendResponse({ ok: false, error: message });
     }
   })();
   return true; // keep channel open for async sendResponse

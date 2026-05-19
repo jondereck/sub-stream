@@ -96,6 +96,32 @@ button.primary {
 button.primary:hover { background: var(--accent-press); }
 button.primary:active { transform: translateY(1px); }
 button.primary.stop { background: var(--err); color: #fff; }
+button.primary[disabled] {
+  cursor: wait;
+  opacity: 0.78;
+  transform: none;
+}
+
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-right: 7px;
+  border: 2px solid rgba(13, 21, 16, 0.3);
+  border-top-color: #0d1510;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: spin 800ms linear infinite;
+}
+
+button.stop .spinner {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .status-grid {
   display: grid;
@@ -105,7 +131,8 @@ button.primary.stop { background: var(--err); color: #fff; }
 }
 
 .status,
-.backend-status {
+.backend-status,
+.mode-status {
   min-height: 28px;
   padding: 6px 9px;
   border-radius: 6px;
@@ -117,6 +144,32 @@ button.primary.stop { background: var(--err); color: #fff; }
 
 .status.live { color: var(--accent); border-color: rgba(72, 213, 151, 0.45); }
 .status.error { color: var(--err); border-color: rgba(255, 107, 107, 0.45); }
+.status.starting { color: var(--warn); border-color: rgba(240, 183, 91, 0.45); }
+
+.mode-status {
+  min-height: 24px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+
+.mode-status.ready { color: var(--accent); }
+.mode-status.warn { color: var(--warn); }
+.mode-status.error { color: var(--err); }
+
+.toast {
+  padding: 8px 10px;
+  border: 1px solid rgba(72, 213, 151, 0.35);
+  border-radius: 8px;
+  background: rgba(72, 213, 151, 0.12);
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.toast.error {
+  border-color: rgba(255, 107, 107, 0.45);
+  background: rgba(255, 107, 107, 0.12);
+}
 
 .backend-status {
   min-height: 24px;
@@ -208,7 +261,9 @@ button.primary.stop { background: var(--err); color: #fff; }
 
 .settings select,
 .settings input[type="text"],
-.advanced input[type="text"] {
+.settings input[type="password"],
+.advanced input[type="text"],
+.advanced input[type="password"] {
   min-height: 32px;
   width: 100%;
   padding: 7px 8px;
@@ -217,6 +272,14 @@ button.primary.stop { background: var(--err); color: #fff; }
   background: var(--panel-strong);
   color: var(--fg);
   font-size: 12px;
+}
+
+.settings select:disabled,
+.settings input:disabled,
+.advanced input:disabled,
+.api-key-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .settings input[type="range"] {
@@ -238,4 +301,36 @@ button.primary.stop { background: var(--err); color: #fff; }
 
 .advanced label {
   margin-top: 9px;
+}
+
+.api-key-settings {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.api-key-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.api-key-actions button {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-strong);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.api-key-actions button:hover {
+  border-color: var(--accent);
+}
+
+.api-key-status {
+  color: var(--muted);
+  font-size: 10px;
 }

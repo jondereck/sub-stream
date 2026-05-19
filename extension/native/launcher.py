@@ -34,6 +34,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -83,6 +85,126 @@ def port_in_use(host: str, port: int) -> bool:
             return False
 
 
+def normalize_config_value(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def backend_status(host: str, port: int) -> Optional[dict[str, Any]]:
+    url = f"http://{host}:{port}/"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as res:
+            if res.status != 200:
+                return None
+            payload = res.read(8192)
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+        return None
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def requested_backend_config(cfg: dict[str, Any]) -> dict[str, str]:
+    transcriber = normalize_config_value(cfg.get("transcriber"))
+    if transcriber == "openai":
+        transcriber = "local"
+    return {
+        "model": normalize_config_value(cfg.get("model")),
+        "device": normalize_config_value(cfg.get("device")),
+        "compute": normalize_config_value(cfg.get("compute")),
+        "transcriber": transcriber,
+    }
+
+
+def existing_backend_mismatch(status: dict[str, Any], cfg: dict[str, Any]) -> list[tuple[str, str, str]]:
+    requested = requested_backend_config(cfg)
+    mismatches: list[tuple[str, str, str]] = []
+    for key, expected in requested.items():
+        if not expected:
+            continue
+        actual = normalize_config_value(status.get(key))
+        if actual and actual != expected:
+            mismatches.append((key, actual, expected))
+    return mismatches
+
+
+def format_backend_mismatch(status: dict[str, Any], cfg: dict[str, Any]) -> str:
+    mismatches = existing_backend_mismatch(status, cfg)
+    active_parts = [f"{key}={actual}" for key, actual, _ in mismatches]
+    requested = requested_backend_config(cfg)
+    requested_parts = [
+        f"{key}={value}"
+        for key, value in requested.items()
+        if value and any(item[0] == key for item in mismatches)
+    ]
+    active_text = "/".join(active_parts) or "different settings"
+    requested_text = "/".join(requested_parts) or "the selected settings"
+    return (
+        f"Backend already running with {active_text}. "
+        f"Stop the existing backend and start again to use {requested_text}."
+    )
+
+
+def find_port_pids(host: str, port: int) -> list[int]:
+    if sys.platform != "win32":
+        return []
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids: set[int] = set()
+    port_suffix = f":{port}"
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local_addr, state, pid_text = parts[1], parts[3].upper(), parts[-1]
+        if state != "LISTENING" or not local_addr.endswith(port_suffix):
+            continue
+        if host not in ("127.0.0.1", "localhost") and not local_addr.startswith(host):
+            continue
+        try:
+            pids.add(int(pid_text))
+        except ValueError:
+            continue
+    return sorted(pids)
+
+
+def terminate_pids(pids: list[int]) -> bool:
+    ok = False
+    for pid in pids:
+        if pid <= 0 or pid == os.getpid():
+            continue
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=CREATE_NO_WINDOW,
+            )
+            ok = True
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return ok
+
+
+def wait_for_port_free(host: str, port: int, timeout_s: float = 8.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not port_in_use(host, port):
+            return True
+        time.sleep(0.15)
+    return not port_in_use(host, port)
+
+
 class BackendManager:
     def __init__(self) -> None:
         self.proc: Optional[subprocess.Popen] = None
@@ -101,10 +223,26 @@ class BackendManager:
         self.host = cfg.get("host") or DEFAULT_HOST
         self.port = int(cfg.get("port") or DEFAULT_PORT)
 
-        # If something is already bound on the port, assume it's the backend
-        # (manually started) and just point the extension at it.
+        # If something is already bound on the port, only attach when it is a
+        # compatible Sub Stream backend. Otherwise the popup may say CPU while
+        # audio is still sent to an older CUDA process.
         if port_in_use(self.host, self.port):
-            return {"type": "already_up", "wsUrl": self.ws_url}
+            status = backend_status(self.host, self.port)
+            if status is None:
+                return {"type": "error",
+                        "message": f"port {self.port} is already in use, but it does not look like the Sub Stream backend."}
+            if existing_backend_mismatch(status, cfg):
+                mismatch_message = format_backend_mismatch(status, cfg)
+                if self.running():
+                    self.stop()
+                else:
+                    pids = find_port_pids(self.host, self.port)
+                    if not pids or not terminate_pids(pids):
+                        return {"type": "error", "message": mismatch_message}
+                if not wait_for_port_free(self.host, self.port):
+                    return {"type": "error", "message": mismatch_message}
+            else:
+                return {"type": "already_up", "wsUrl": self.ws_url}
 
         if not VENV_PY.exists():
             return {"type": "error",
@@ -123,6 +261,8 @@ class BackendManager:
             ("KAMI_PORT", "port"),
         ):
             v = cfg.get(k_cfg)
+            if k_cfg == "transcriber" and normalize_config_value(v) == "openai":
+                v = "local"
             if v is not None and v != "":
                 env[k_env] = str(v)
 

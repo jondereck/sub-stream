@@ -14,6 +14,7 @@ let settings = null;
 let isRunning = false;          // true between start() and stop()
 let reconnectAttempts = 0;
 let reconnectTimer = null;
+let reconnectingForConfig = false;
 const MAX_RECONNECT_DELAY_MS = 5000;
 const MAX_AUDIO_DELAY_MS = 8000;
 
@@ -68,7 +69,7 @@ function audioRms(float32) {
 }
 
 function currentTranscriber() {
-  return (settings && settings.transcriber) || 'openai-realtime';
+  return (settings && settings.transcriber) || 'local';
 }
 
 function isRealtimeMode() {
@@ -89,6 +90,24 @@ function localChunkSeconds() {
 function targetFrameSamples() {
   const seconds = isRealtimeMode() ? REALTIME_FRAME_SECONDS : localChunkSeconds();
   return Math.round(targetSampleRate() * seconds);
+}
+
+function buildConfigMessage() {
+  return {
+    type: 'config',
+    sampleRate: targetSampleRate(),
+    sourceLang: (settings && settings.sourceLang) || 'auto',
+    targetLang: (settings && settings.targetLang) || 'ar',
+    realtimeLatency: (settings && settings.realtimeLatency) || 'balanced',
+    task: (settings && settings.task) || 'translate',
+    transcriber: currentTranscriber()
+  };
+}
+
+function sendConfig() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(buildConfigMessage()));
+  return true;
 }
 
 async function flushActiveUsage() {
@@ -135,14 +154,8 @@ function openSocket() {
 
   ws.addEventListener('open', () => {
     reconnectAttempts = 0;
-    ws.send(JSON.stringify({
-      type: 'config',
-      sampleRate: targetSampleRate(),
-      sourceLang: (settings && settings.sourceLang) || 'auto',
-      targetLang: (settings && settings.targetLang) || 'ar',
-      task: (settings && settings.task) || 'translate',
-      transcriber: currentTranscriber()
-    }));
+    reconnectingForConfig = false;
+    sendConfig();
     chrome.runtime.sendMessage({ target: 'background', type: 'ws:state', state: 'connected' });
   });
 
@@ -186,12 +199,39 @@ function openSocket() {
   });
 
   ws.addEventListener('close', () => {
+    if (reconnectingForConfig && isRunning) {
+      reconnectingForConfig = false;
+      openSocket();
+      return;
+    }
     chrome.runtime.sendMessage({ target: 'background', type: 'ws:state', state: 'closed' });
     // If we're still supposed to be running, try to come back. The server
     // session can die without the process dying (one bad chunk → WS closes
     // but uvicorn keeps listening). Reconnect re-attaches to the same server.
     scheduleReconnect();
   });
+}
+
+function reconnectSocketForConfig() {
+  if (!isRunning) return;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  chunkBuffer = new Float32Array(0);
+  chunkSeq = 0;
+  reconnectAttempts = 0;
+  reconnectingForConfig = true;
+  chrome.runtime.sendMessage({ target: 'background', type: 'ws:state', state: 'applying' });
+
+  if (!ws || ws.readyState === WebSocket.CLOSED) {
+    reconnectingForConfig = false;
+    openSocket();
+    return;
+  }
+  try {
+    ws.close();
+  } catch (e) {
+    reconnectingForConfig = false;
+    openSocket();
+  }
 }
 
 function sendChunkIfReady() {
@@ -288,6 +328,7 @@ async function stop() {
   isRunning = false;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (usageFlushTimer) { clearTimeout(usageFlushTimer); usageFlushTimer = null; }
+  reconnectingForConfig = false;
   await flushActiveUsage();
   reconnectAttempts = 0;
 
@@ -321,9 +362,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await stop();
         sendResponse({ ok: true });
       } else if (msg.type === 'settings:update') {
+        const oldTranscriber = currentTranscriber();
+        const oldBackendUrl = (settings && settings.backendUrl) || 'ws://127.0.0.1:8765/ws';
         if (currentTranscriber() === 'openai-realtime') await flushActiveUsage();
         settings = { ...(settings || {}), ...(msg.settings || {}) };
         applyAudioDelay();
+        const nextBackendUrl = (settings && settings.backendUrl) || 'ws://127.0.0.1:8765/ws';
+        if (oldTranscriber !== currentTranscriber() || oldBackendUrl !== nextBackendUrl) {
+          reconnectSocketForConfig();
+        } else {
+          sendConfig();
+        }
         sendResponse({ ok: true });
       }
     } catch (err) {

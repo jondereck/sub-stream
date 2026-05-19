@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ctypes
 import hmac
 import io
 import json
 import logging
 import os
 import re
+import secrets
 import sys
 import time
 import wave
@@ -107,8 +109,8 @@ from pydantic import BaseModel, Field
 
 from config import (
     MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR, TRANSCRIBER,
-    OPENAI_TRANSCRIBE_MODEL, HOST, PORT, SAMPLE_RATE, REALTIME_SAMPLE_RATE,
-    VAD_FILTER, MAX_CHUNK_LAG_S, MOBILE_TOKEN,
+    HOST, PORT, SAMPLE_RATE, REALTIME_SAMPLE_RATE, VAD_FILTER,
+    MAX_CHUNK_LAG_S, MOBILE_TOKEN,
 )
 
 log = logging.getLogger("sub-stream-ai")
@@ -127,7 +129,12 @@ OPENAI_REALTIME_TRANSLATE_URL = (
 REALTIME_TRANSCRIBER = "openai-realtime"
 REALTIME_PHRASE_CHARS = 72
 REALTIME_PHRASE_IDLE_S = 0.75
-ALLOWED_TRANSCRIBERS = {"local", "openai", REALTIME_TRANSCRIBER}
+REALTIME_LATENCY_PROFILES = {
+    "fast": {"phrase_chars": 56, "idle_s": 1.0},
+    "balanced": {"phrase_chars": 72, "idle_s": 1.6},
+    "stable": {"phrase_chars": 92, "idle_s": 2.3},
+}
+ALLOWED_TRANSCRIBERS = {"local", REALTIME_TRANSCRIBER}
 ALLOWED_TARGET_LANGS = {
     "ar", "en", "es", "fr", "de", "tr", "ja", "ko", "zh", "hi",
     "it", "pt", "ru", "id", "ms", "th", "vi", "fil",
@@ -145,6 +152,25 @@ class TranslateRequest(BaseModel):
 
 class TranslateResponse(BaseModel):
     text: str
+
+
+class ApiKeySaveRequest(BaseModel):
+    apiKey: str = Field(min_length=20, max_length=300)
+    test: bool = True
+
+
+class ApiKeyTestRequest(BaseModel):
+    apiKey: str | None = Field(default=None, max_length=300)
+
+
+class ApiKeyStatusResponse(BaseModel):
+    configured: bool
+    source: str | None = None
+
+
+class ApiKeyActionResponse(BaseModel):
+    ok: bool
+    configured: bool
 
 
 def mobile_token_required() -> bool:
@@ -185,6 +211,119 @@ def safe_target_lang_or_error(value: str | None) -> str:
         raise HTTPException(status_code=400, detail="Unsupported target language.")
     return lang
 
+
+def api_key_store_path() -> Path:
+    configured = os.getenv("SUBSTREAM_OPENAI_KEY_FILE")
+    if configured:
+        return Path(configured).expanduser()
+    if sys.platform == "win32" and os.getenv("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "SubStreamAI" / "openai_api_key.dat"
+    return Path.home() / ".config" / "sub-stream-ai" / "openai_api_key.dat"
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _blob_from_bytes(data: bytes) -> _DataBlob:
+    buf = ctypes.create_string_buffer(data)
+    blob = _DataBlob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    blob._buf = buf
+    return blob
+
+
+def _windows_protect(data: bytes) -> bytes:
+    blob_in = _blob_from_bytes(data)
+    blob_out = _DataBlob()
+    crypt32 = ctypes.windll.crypt32
+    if not crypt32.CryptProtectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        raise OSError("Could not protect API key with Windows DPAPI.")
+    try:
+        protected = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    return protected
+
+
+def _windows_unprotect(data: bytes) -> bytes:
+    blob_in = _blob_from_bytes(data)
+    blob_out = _DataBlob()
+    crypt32 = ctypes.windll.crypt32
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
+    ):
+        raise OSError("Could not read the saved API key.")
+    try:
+        plain = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    return plain
+
+
+def encode_stored_secret(secret: str) -> bytes:
+    raw = secret.encode("utf-8")
+    if sys.platform == "win32":
+        return b"win-dpapi:" + base64.b64encode(_windows_protect(raw))
+    return b"plain:" + base64.b64encode(raw)
+
+
+def decode_stored_secret(payload: bytes) -> str:
+    if payload.startswith(b"win-dpapi:"):
+        raw = base64.b64decode(payload.removeprefix(b"win-dpapi:"))
+        return _windows_unprotect(raw).decode("utf-8")
+    if payload.startswith(b"plain:"):
+        raw = base64.b64decode(payload.removeprefix(b"plain:"))
+        return raw.decode("utf-8")
+    return payload.decode("utf-8")
+
+
+def read_stored_openai_key() -> str | None:
+    path = api_key_store_path()
+    if not path.exists():
+        return None
+    try:
+        key = decode_stored_secret(path.read_bytes()).strip()
+        return key or None
+    except Exception as e:
+        log.warning("could not read stored OpenAI API key: %s", e)
+        return None
+
+
+def write_stored_openai_key(api_key: str) -> None:
+    path = api_key_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    tmp.write_bytes(encode_stored_secret(api_key.strip()))
+    if sys.platform != "win32":
+        os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def configured_openai_key() -> tuple[str | None, str | None]:
+    env_key = os.getenv("OPENAI_API_KEY")
+    if env_key:
+        return env_key.strip(), "env"
+    stored_key = read_stored_openai_key()
+    if stored_key:
+        return stored_key, "stored"
+    return None, None
+
+
+def assert_valid_openai_key(api_key: str) -> None:
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    client.models.list()
+
+
+async def validate_openai_key(api_key: str) -> None:
+    try:
+        await asyncio.to_thread(assert_valid_openai_key, api_key)
+    except Exception as e:
+        log.warning("OpenAI API key validation failed: %s", type(e).__name__)
+        raise HTTPException(status_code=400, detail="API key validation failed.") from e
+
 def resolve_compute_type(device: str, requested: str) -> str:
     if device != "cuda":
         return requested
@@ -223,10 +362,11 @@ def get_model():
 def get_openai_client():
     global _openai_client
     if _openai_client is None:
-        if not os.getenv("OPENAI_API_KEY"):
+        api_key, _source = configured_openai_key()
+        if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set. Add it to .env or backend/.env.")
         from openai import OpenAI
-        _openai_client = OpenAI()
+        _openai_client = OpenAI(api_key=api_key)
     return _openai_client
 
 
@@ -298,6 +438,7 @@ class Session:
     sample_rate: int = SAMPLE_RATE
     source_lang: str = "auto"
     target_lang: str = "ar"
+    realtime_latency: str = "balanced"
     task: str = "transcribe"
     transcriber: str = TRANSCRIBER if TRANSCRIBER in ALLOWED_TRANSCRIBERS else "local"
     chunk_id: int = 0
@@ -315,8 +456,6 @@ class ChunkItem:
 
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
     """Returns (raw_text, detected_lang)."""
-    if session.transcriber == "openai":
-        return transcribe_chunk_openai(session, pcm_int16)
     return transcribe_chunk_local(session, pcm_int16)
 
 
@@ -328,6 +467,11 @@ def safe_transcriber(value: str | None) -> str:
 def safe_target_lang(value: str | None) -> str:
     lang = (value or "ar").strip().lower()
     return lang if lang in ALLOWED_TARGET_LANGS else "ar"
+
+
+def safe_realtime_latency(value: str | None) -> str:
+    latency = (value or "balanced").strip().lower()
+    return latency if latency in REALTIME_LATENCY_PROFILES else "balanced"
 
 
 def safe_sample_rate(value, default: int) -> int:
@@ -347,6 +491,7 @@ def apply_config(session: Session, cfg: dict) -> None:
     session.sample_rate = safe_sample_rate(cfg.get("sampleRate", session.sample_rate), default_rate)
     session.source_lang = cfg.get("sourceLang", session.source_lang) or "auto"
     session.target_lang = safe_target_lang(cfg.get("targetLang", session.target_lang))
+    session.realtime_latency = safe_realtime_latency(cfg.get("realtimeLatency", session.realtime_latency))
     session.task = cfg.get("task", session.task) or "transcribe"
 
 
@@ -392,23 +537,6 @@ def pcm_to_wav_file(pcm_int16: np.ndarray, sample_rate: int) -> io.BytesIO:
     wav_file.seek(0)
     wav_file.name = "chunk.wav"
     return wav_file
-
-
-def transcribe_chunk_openai(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
-    """Returns (raw_text, detected_lang) from OpenAI speech-to-text."""
-    if pcm_int16.size == 0:
-        return "", session.source_lang or "auto"
-    client = get_openai_client()
-    language = None if session.source_lang in (None, "", "auto") else session.source_lang
-    kwargs = {
-        "model": OPENAI_TRANSCRIBE_MODEL,
-        "file": pcm_to_wav_file(pcm_int16, session.sample_rate),
-    }
-    if language:
-        kwargs["language"] = language
-    result = client.audio.transcriptions.create(**kwargs)
-    text = getattr(result, "text", "") or ""
-    return text.strip(), language or "auto"
 
 
 async def _handle_chunk(
@@ -571,9 +699,14 @@ def realtime_caption_window(text: str) -> str:
 class RealtimeCaptionState:
     """Groups realtime transcript deltas into subtitle-sized phrase blocks."""
 
-    def __init__(self, limit: int = REALTIME_PHRASE_CHARS) -> None:
-        self.limit = limit
+    def __init__(self, latency: str = "balanced") -> None:
+        self.set_latency(latency)
         self.current = ""
+
+    def set_latency(self, latency: str) -> None:
+        profile = REALTIME_LATENCY_PROFILES.get(safe_realtime_latency(latency), REALTIME_LATENCY_PROFILES["balanced"])
+        self.limit = int(profile["phrase_chars"])
+        self.idle_s = float(profile["idle_s"])
 
     @staticmethod
     def clean(text: str) -> str:
@@ -628,7 +761,7 @@ async def send_safe_error(ws: WebSocket, message: str) -> None:
 
 async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
     """Bridge extension PCM frames to OpenAI Realtime Translation."""
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key, _source = configured_openai_key()
     if not api_key:
         await send_safe_error(
             ws,
@@ -660,7 +793,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 session.target_lang,
             )
 
-            caption_state = RealtimeCaptionState()
+            caption_state = RealtimeCaptionState(session.realtime_latency)
             clear_task: asyncio.Task | None = None
 
             async def send_realtime_caption(text: str, *, is_final: bool = False, delta: str | None = None) -> None:
@@ -675,7 +808,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
             async def clear_after_idle() -> None:
-                await asyncio.sleep(REALTIME_PHRASE_IDLE_S)
+                await asyncio.sleep(caption_state.idle_s)
                 caption_state.flush()
                 await send_realtime_caption("", is_final=True)
 
@@ -703,7 +836,10 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             continue
                         if cfg.get("type") == "config":
                             old_target = session.target_lang
+                            old_latency = session.realtime_latency
                             apply_config(session, cfg)
+                            if session.realtime_latency != old_latency:
+                                caption_state.set_latency(session.realtime_latency)
                             if session.target_lang != old_target:
                                 await upstream.send(json.dumps(realtime_session_update(session.target_lang)))
 
@@ -787,7 +923,7 @@ async def handle_socket(ws: WebSocket):
             await handle_realtime_socket(ws, session)
             return
 
-        # Keep only the newest pending chunk while Whisper/OpenAI chunked work
+        # Keep only the newest pending chunk while local Whisper work
         # is running. Live subtitles should skip stale audio, not build backlog.
         chunk_queue = asyncio.Queue(maxsize=1)
         chunk_worker = asyncio.create_task(handle_latest_chunk_queue(ws, session, chunk_queue))
@@ -869,14 +1005,17 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
+    api_key, api_key_source = configured_openai_key()
     return {
         "ok": True,
         "model": MODEL_SIZE,
         "device": DEVICE,
         "compute": _effective_compute_type or resolve_compute_type(DEVICE, COMPUTE_TYPE),
         "transcriber": TRANSCRIBER,
-        "openai_transcribe_model": OPENAI_TRANSCRIBE_MODEL if TRANSCRIBER == "openai" else None,
-        "openai_realtime_model": OPENAI_REALTIME_TRANSLATE_MODEL if TRANSCRIBER == REALTIME_TRANSCRIBER else None,
+        "openai_realtime_model": OPENAI_REALTIME_TRANSLATE_MODEL,
+        "api_key_configured": bool(api_key),
+        "api_key_source": api_key_source,
+        "ready": True,
         "translator": TRANSLATOR,
         "ws": f"ws://{HOST}:{PORT}/ws",
         "mobile_token_required": mobile_token_required(),
@@ -892,6 +1031,36 @@ async def translate_text(req: TranslateRequest):
     src = safe_source_lang_or_error(req.sourceLang)
     tgt = safe_target_lang_or_error(req.targetLang)
     return TranslateResponse(text=translate(text[:MAX_TRANSLATE_CHARS], src, tgt))
+
+
+@app.get("/settings/api-key", response_model=ApiKeyStatusResponse)
+async def api_key_status():
+    _api_key, source = configured_openai_key()
+    return ApiKeyStatusResponse(configured=bool(_api_key), source=source)
+
+
+@app.post("/settings/api-key", response_model=ApiKeyActionResponse)
+async def save_api_key(req: ApiKeySaveRequest):
+    global _openai_client
+    api_key = req.apiKey.strip()
+    if not api_key.startswith("sk-"):
+        raise HTTPException(status_code=400, detail="API key validation failed.")
+    if req.test:
+        await validate_openai_key(api_key)
+    write_stored_openai_key(api_key)
+    _openai_client = None
+    return ApiKeyActionResponse(ok=True, configured=True)
+
+
+@app.post("/settings/api-key/test", response_model=ApiKeyActionResponse)
+async def test_api_key(req: ApiKeyTestRequest):
+    api_key = (req.apiKey or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No API key provided.")
+    if not api_key.startswith("sk-"):
+        raise HTTPException(status_code=400, detail="API key validation failed.")
+    await validate_openai_key(api_key)
+    return ApiKeyActionResponse(ok=True, configured=True)
 
 
 @app.websocket("/ws")

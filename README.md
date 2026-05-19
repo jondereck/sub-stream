@@ -109,10 +109,10 @@ Cloud mode connects to the same backend at `ws://<pc-lan-ip>:8765/ws`. Local mod
 | Field | Default | Notes |
 |---|---|---|
 | Source language | Auto detect | Set explicitly to skip Whisper's lang detection |
-| Target language | Arabic | Translation target |
-| Transcription engine | Realtime Cloud (OpenAI) | Local Whisper and chunked OpenAI fallback remain available |
+| Target language | English | Translation target |
+| Transcription engine | Local Whisper | Realtime Cloud (OpenAI) remains available |
 | Whisper model | base | Used only by Local Whisper; tiny/base use shorter low-latency chunks |
-| Device | GPU (CUDA) | Used only by Local Whisper |
+| Device | CPU | Used only by Local Whisper |
 | Font size | 28px | Slider 14–56 |
 | Position | Bottom | Bottom / Top |
 | AI cost estimate | Active audio only | Realtime Cloud only; paused/silent audio is not counted |
