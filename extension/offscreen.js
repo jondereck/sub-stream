@@ -171,6 +171,8 @@ function openSocket() {
           delta: data.delta,
           isFinal: !!data.isFinal,
           mode: data.mode,
+          captionId: data.captionId,
+          phase: data.phase,
           chunkId: data.chunkId,
           receivedAt: data.receivedAt,
           segmentStartTs: data.segmentStartTs,
@@ -257,14 +259,14 @@ function sendChunkIfReady() {
     const rms = audioRms(chunk);
     const pcm16 = float32ToInt16(chunk);
     if (ws && ws.readyState === WebSocket.OPEN) {
-      if (!isRealtimeMode()) {
-        const chunkId = ++chunkSeq;
-        ws.send(JSON.stringify({
-          type: 'chunk',
-          chunkId,
-          capturedAt
-        }));
-      }
+      const chunkId = ++chunkSeq;
+      ws.send(JSON.stringify({
+        type: 'chunk',
+        chunkId,
+        capturedAt,
+        duration: frameSamples / sampleRate,
+        sampleRate
+      }));
       ws.send(pcm16.buffer);
       if (isRealtimeMode() && rms >= ACTIVE_AUDIO_RMS) {
         trackActiveUsage((pcm16.length / targetSampleRate()) * 1000);

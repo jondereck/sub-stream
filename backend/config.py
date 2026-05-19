@@ -31,9 +31,13 @@ COMPUTE_TYPE = os.getenv(
     "int8_float32" if DEVICE == "cuda" else "int8",
 )
 
-# Translation backend: "google" (deep-translator via web, zero setup) | "none"
+# Translation backend: "openai" (best quality, needs API key) | "google" | "none"
 # Future: "argos" for fully offline.
-TRANSLATOR = os.getenv("KAMI_TRANSLATOR", "google")
+TRANSLATOR = os.getenv("KAMI_TRANSLATOR", "openai").strip().lower()
+
+# OpenAI text model used only for translation. Realtime speech recognition
+# still uses OPENAI_REALTIME_TRANSCRIBE_MODEL from server.py.
+OPENAI_TRANSLATION_MODEL = os.getenv("OPENAI_TRANSLATION_MODEL", "gpt-5-mini").strip()
 
 HOST = os.getenv("KAMI_HOST", "127.0.0.1")
 PORT = int(os.getenv("KAMI_PORT", "8765"))

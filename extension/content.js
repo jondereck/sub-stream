@@ -3,11 +3,17 @@
 
 const OVERLAY_ID = 'kami-subs-overlay';
 const MAX_VISIBLE_CHARS = 180;
+const TARGET_SUBTITLE_CARD_CHARS = 92;
+const MIN_SUBTITLE_CARD_CHARS = 36;
+const READABILITY_BASE_MS = 900;
+const READABILITY_MS_PER_CHAR = 45;
 const MIN_SUBTITLE_DELAY_MS = -10000;
 const MAX_SUBTITLE_DELAY_MS = 10000;
 const DEFAULT_SUBTITLE_DURATION_MS = 2600;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
+const MAX_SUBTITLE_QUEUE_ITEMS = 80;
+const EPOCH_SECONDS_THRESHOLD = 1000000000;
 
 let overlayEl = null;
 let textEl = null;
@@ -20,6 +26,10 @@ let resizeObserver = null;
 let scrollHandler = null;
 let currentSettings = {};
 let currentSyncMetrics = null;
+let relativeTimelineBaseMs = null;
+let nativeSubtitleTrack = null;
+let nativeSubtitleCue = null;
+let nativeSubtitleText = '';
 
 function pickPrimaryVideo() {
   const videos = Array.from(document.querySelectorAll('video'));
@@ -40,6 +50,15 @@ function currentOverlayHost() {
   // everything else and only descendants of the fullscreen element are visible.
   // Re-parent the overlay there so subtitles survive fullscreen.
   return document.fullscreenElement || document.webkitFullscreenElement || document.documentElement;
+}
+
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function shouldUseNativeVideoSubtitle() {
+  const fs = fullscreenElement();
+  return !!(fs && fs.tagName && fs.tagName.toLowerCase() === 'video');
 }
 
 function ensureOverlay(settings) {
@@ -106,7 +125,12 @@ function positionOverlayOverVideo() {
 }
 
 function trackVideo() {
+  const previousVideo = trackedVideo;
   trackedVideo = pickPrimaryVideo();
+  if (previousVideo !== trackedVideo) {
+    clearNativeSubtitle();
+    nativeSubtitleTrack = null;
+  }
   if (resizeObserver) try { resizeObserver.disconnect(); } catch (e) {}
   if (window.ResizeObserver && trackedVideo) {
     resizeObserver = new ResizeObserver(() => positionOverlayOverVideo());
@@ -126,6 +150,59 @@ function untrackVideo() {
     scrollHandler = null;
   }
   trackedVideo = null;
+  clearNativeSubtitle();
+}
+
+function ensureNativeSubtitleTrack() {
+  if (!trackedVideo || !trackedVideo.addTextTrack) return null;
+  if (nativeSubtitleTrack) return nativeSubtitleTrack;
+  nativeSubtitleTrack = trackedVideo.addTextTrack('captions', 'Sub Stream AI', 'en');
+  nativeSubtitleTrack.mode = 'showing';
+  return nativeSubtitleTrack;
+}
+
+function clearNativeSubtitle() {
+  if (nativeSubtitleTrack) {
+    try {
+      Array.from(nativeSubtitleTrack.cues || []).forEach((cue) => nativeSubtitleTrack.removeCue(cue));
+    } catch (e) {}
+  }
+  nativeSubtitleCue = null;
+  nativeSubtitleText = '';
+}
+
+function showNativeSubtitle(text) {
+  if (!shouldUseNativeVideoSubtitle() || !trackedVideo) {
+    clearNativeSubtitle();
+    return;
+  }
+  const track = ensureNativeSubtitleTrack();
+  if (!track) return;
+
+  const cleanText = (text || '').trim();
+  if (!cleanText) {
+    clearNativeSubtitle();
+    return;
+  }
+
+  const now = Number(trackedVideo.currentTime) || 0;
+  if (nativeSubtitleCue && nativeSubtitleText === cleanText && nativeSubtitleCue.endTime > now + 0.25) {
+    return;
+  }
+
+  clearNativeSubtitle();
+  const Cue = window.VTTCue || window.TextTrackCue;
+  if (!Cue) return;
+  try {
+    nativeSubtitleCue = new Cue(Math.max(0, now - 0.05), now + 60, cleanText);
+    nativeSubtitleCue.line = 'auto';
+    nativeSubtitleCue.align = 'center';
+    nativeSubtitleTrack.addCue(nativeSubtitleCue);
+    nativeSubtitleText = cleanText;
+  } catch (e) {
+    nativeSubtitleCue = null;
+    nativeSubtitleText = '';
+  }
 }
 
 function mount(settings, sync) {
@@ -139,6 +216,7 @@ function unmount() {
   stopRenderLoop();
   activeSubtitle = null;
   subtitleQueue = [];
+  relativeTimelineBaseMs = null;
   if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
   untrackVideo();
   document.querySelectorAll('#' + OVERLAY_ID).forEach(n => n.remove());
@@ -157,6 +235,153 @@ function subtitleDurationMs() {
   const raw = Number(currentSettings.subtitleDurationMs);
   if (!Number.isFinite(raw)) return DEFAULT_SUBTITLE_DURATION_MS;
   return Math.max(MIN_SUBTITLE_DURATION_MS, Math.min(MAX_SUBTITLE_DURATION_MS, raw));
+}
+
+function readableDurationMs(text) {
+  const length = (text || '').trim().length;
+  const estimated = READABILITY_BASE_MS + (length * READABILITY_MS_PER_CHAR);
+  return Math.max(subtitleDurationMs(), Math.min(MAX_SUBTITLE_DURATION_MS, estimated));
+}
+
+function numberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function timelineSecondsToMs(value, receivedAtMs) {
+  const seconds = numberOrNull(value);
+  if (seconds === null) return null;
+
+  // Backend currently sends wall-clock seconds. If a future backend sends
+  // session-relative seconds, anchor that relative timeline to first receipt.
+  if (seconds >= EPOCH_SECONDS_THRESHOLD) return seconds * 1000;
+  if (relativeTimelineBaseMs === null) {
+    relativeTimelineBaseMs = receivedAtMs - (seconds * 1000);
+  }
+  return relativeTimelineBaseMs + (seconds * 1000);
+}
+
+function hideSubtitleText() {
+  if (!overlayEl || !textEl) return;
+  overlayEl.classList.remove('kami-visible');
+  textEl.textContent = '';
+  clearNativeSubtitle();
+}
+
+function clearPendingSubtitle() {
+  activeSubtitle = null;
+  subtitleQueue = [];
+  hideSubtitleText();
+}
+
+function sameSubtitle(a, b) {
+  if (!a || !b) return false;
+  if (a.captionId && b.captionId && a.captionId === b.captionId && a.cardIndex === b.cardIndex) return true;
+  if (a.groupId && b.groupId && a.groupId === b.groupId && a.cardIndex === b.cardIndex) return true;
+  const sameChunk = a.chunkId != null && b.chunkId != null && String(a.chunkId) === String(b.chunkId);
+  const closeStart = Math.abs(a.segmentStartTs - b.segmentStartTs) < 250;
+  return sameChunk && a.cardIndex === b.cardIndex || (!a.groupId && !b.groupId && closeStart);
+}
+
+function shouldIgnoreEmptyTranscript(msg) {
+  return msg && (
+    msg.chunkId != null ||
+    msg.segmentStartTs != null ||
+    msg.segmentEndTs != null ||
+    msg.isFinal === true ||
+    msg.mode
+  );
+}
+
+function splitLongText(text) {
+  const normalized = (text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= TARGET_SUBTITLE_CARD_CHARS) return [normalized];
+
+  const words = normalized.split(' ');
+  if (words.length === 1) {
+    const chunks = [];
+    for (let i = 0; i < normalized.length; i += TARGET_SUBTITLE_CARD_CHARS) {
+      chunks.push(normalized.slice(i, i + TARGET_SUBTITLE_CARD_CHARS).trim());
+    }
+    return chunks.filter(Boolean);
+  }
+
+  const cards = [];
+  let current = '';
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    const endsSentence = /[.!?。！？؟]$/.test(word);
+    if (
+      current &&
+      (next.length > TARGET_SUBTITLE_CARD_CHARS ||
+        (endsSentence && next.length >= MIN_SUBTITLE_CARD_CHARS))
+    ) {
+      cards.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) cards.push(current);
+  return cards.length ? cards : [normalized];
+}
+
+function buildSubtitleItems(text, segmentStartTs, segmentEndTs, receivedAt, receivedAtMs, chunkId, captionId, phase) {
+  const cards = splitLongText(text);
+  const groupId = captionId
+    ? `caption:${captionId}`
+    : chunkId != null
+    ? `chunk:${chunkId}`
+    : `time:${Math.round(segmentStartTs)}:${Math.round(segmentEndTs)}`;
+  const readableDurations = cards.map(readableDurationMs);
+  const sourceDuration = Math.max(segmentEndTs - segmentStartTs, subtitleDurationMs());
+  const scheduleDuration = Math.max(sourceDuration, readableDurations.reduce((sum, value) => sum + value, 0));
+  let cursor = segmentStartTs;
+
+  return cards.map((card, index) => {
+    const remainingReadable = readableDurations.slice(index).reduce((sum, value) => sum + value, 0);
+    const duration = index === cards.length - 1
+      ? Math.max(readableDurations[index], segmentStartTs + scheduleDuration - cursor)
+      : Math.max(readableDurations[index], (scheduleDuration * readableDurations[index]) / Math.max(remainingReadable, 1));
+    const item = {
+      text: card,
+      segmentStartTs: cursor,
+      segmentEndTs: cursor + duration,
+      actualShowAt: null,
+      receivedAt,
+      receivedAtMs,
+      chunkId,
+      captionId,
+      phase,
+      groupId,
+      cardIndex: index,
+      cardCount: cards.length,
+    };
+    cursor += duration;
+    return item;
+  });
+}
+
+function enqueueSubtitleItems(items) {
+  if (!items.length) return;
+  const groupId = items[0].groupId;
+  subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
+
+  if (activeSubtitle && activeSubtitle.groupId === groupId) {
+    const replacement = items.find((item) => item.cardIndex === activeSubtitle.cardIndex);
+    if (replacement) {
+      replacement.actualShowAt = replacement.text === activeSubtitle.text && replacement.phase === activeSubtitle.phase
+        ? activeSubtitle.actualShowAt
+        : null;
+      activeSubtitle = replacement;
+    }
+    subtitleQueue.push(...items.filter((item) => item.cardIndex > activeSubtitle.cardIndex));
+  } else {
+    subtitleQueue.push(...items);
+  }
+
+  subtitleQueue.sort((a, b) => a.segmentStartTs - b.segmentStartTs);
+  while (subtitleQueue.length > MAX_SUBTITLE_QUEUE_ITEMS) subtitleQueue.shift();
 }
 
 function startRenderLoop() {
@@ -181,29 +406,32 @@ function updateSubtitles() {
 
   const now = Date.now();
   const offsetMs = subtitleOffsetMs();
-  const minVisibleMs = MIN_SUBTITLE_DURATION_MS;
 
-  // 1. Process Queue: promote pending to active if it's time to show.
-  while (subtitleQueue.length > 0) {
+  // Promote one due item at a time so split subtitles remain readable instead
+  // of skipping directly to the last card when a transcript arrives late.
+  if (!activeSubtitle && subtitleQueue.length > 0) {
     const next = subtitleQueue[0];
     const showAt = next.segmentStartTs + offsetMs;
-    // If the next subtitle in queue should already be visible, promote it.
     if (now >= showAt) {
       activeSubtitle = subtitleQueue.shift();
-    } else {
-      break;
+      activeSubtitle.actualShowAt = null;
     }
   }
 
-  // 2. Decide if active should be visible
   if (activeSubtitle) {
     const showAt = activeSubtitle.segmentStartTs + offsetMs;
     let hideAt = activeSubtitle.segmentEndTs + offsetMs;
+    const canShow = now >= showAt;
+    if (canShow && activeSubtitle.actualShowAt === null) {
+      activeSubtitle.actualShowAt = now;
+    }
     // Fallback: ensure minimum duration for readability.
-    // Manual offset shifts both showAt and hideAt, so duration is preserved.
-    hideAt = Math.max(hideAt, showAt + minVisibleMs);
+    // Manual offset shifts both showAt and hideAt; readability uses actual
+    // display time so late arrivals do not instantly disappear.
+    const actualShowAt = activeSubtitle.actualShowAt === null ? showAt : activeSubtitle.actualShowAt;
+    hideAt = Math.max(hideAt, actualShowAt + readableDurationMs(activeSubtitle.text));
 
-    if (now >= showAt && now < hideAt) {
+    if (canShow && now < hideAt) {
       // Within visible window
       let t = (activeSubtitle.text || '').trim();
       if (t.length > MAX_VISIBLE_CHARS) t = '…' + t.slice(-MAX_VISIBLE_CHARS);
@@ -211,16 +439,15 @@ function updateSubtitles() {
       if (textEl.textContent !== t) {
         textEl.textContent = t;
       }
+      showNativeSubtitle(t);
       if (!overlayEl.classList.contains('kami-visible')) {
         overlayEl.classList.add('kami-visible');
         positionOverlayOverVideo();
       }
     } else {
       // Outside visible window
-      if (overlayEl.classList.contains('kami-visible')) {
-        overlayEl.classList.remove('kami-visible');
-        textEl.textContent = '';
-      }
+      if (overlayEl.classList.contains('kami-visible')) hideSubtitleText();
+      clearNativeSubtitle();
 
       // If it's already past the hide time, clear it so we don't keep checking.
       // If now < showAt (due to positive offset), we keep it as activeSubtitle
@@ -231,10 +458,8 @@ function updateSubtitles() {
     }
   } else {
     // No active subtitle
-    if (overlayEl.classList.contains('kami-visible')) {
-      overlayEl.classList.remove('kami-visible');
-      textEl.textContent = '';
-    }
+    if (overlayEl.classList.contains('kami-visible')) hideSubtitleText();
+    clearNativeSubtitle();
   }
 }
 
@@ -242,53 +467,35 @@ function setTranscriptText(msg) {
   const text = (msg.text || '').trim();
   if (msg.sync) currentSyncMetrics = msg.sync;
 
-  if (!text) return;
+  if (!text) {
+    if (shouldIgnoreEmptyTranscript(msg)) return;
+    clearPendingSubtitle();
+    return;
+  }
 
   const receivedAtMs = Number(msg.receivedAtMs) || Date.now();
+  const receivedAt = numberOrNull(msg.receivedAt);
 
   // Use segment timestamps from backend if available (converted to ms).
   // Otherwise, fallback to arrival time.
-  let segmentStartTs = msg.segmentStartTs ? msg.segmentStartTs * 1000 : receivedAtMs;
-  let segmentEndTs = msg.segmentEndTs ? msg.segmentEndTs * 1000 : segmentStartTs + subtitleDurationMs();
+  const startFromBackend = timelineSecondsToMs(msg.segmentStartTs, receivedAtMs);
+  const endFromBackend = timelineSecondsToMs(msg.segmentEndTs, receivedAtMs);
+  let segmentStartTs = startFromBackend === null ? receivedAtMs : startFromBackend;
+  let segmentEndTs = endFromBackend === null ? segmentStartTs + subtitleDurationMs() : endFromBackend;
+  if (segmentEndTs <= segmentStartTs) {
+    segmentEndTs = segmentStartTs + subtitleDurationMs();
+  }
 
-  const item = {
+  enqueueSubtitleItems(buildSubtitleItems(
     text,
     segmentStartTs,
     segmentEndTs,
+    receivedAt,
     receivedAtMs,
-    chunkId: msg.chunkId
-  };
-
-  // If this is an update to the current active subtitle or the latest queued one, replace it.
-  // We prefer chunkId if available for exact matching, otherwise use timestamp proximity.
-  let replaced = false;
-  if (activeSubtitle) {
-    const match = (item.chunkId && activeSubtitle.chunkId === item.chunkId) ||
-                  (!item.chunkId && Math.abs(activeSubtitle.segmentStartTs - segmentStartTs) < 200);
-    if (match) {
-      activeSubtitle = item;
-      replaced = true;
-    }
-  }
-
-  if (!replaced && subtitleQueue.length > 0) {
-    const last = subtitleQueue[subtitleQueue.length - 1];
-    const match = (item.chunkId && last.chunkId === item.chunkId) ||
-                  (!item.chunkId && Math.abs(last.segmentStartTs - segmentStartTs) < 200);
-    if (match) {
-      subtitleQueue[subtitleQueue.length - 1] = item;
-      replaced = true;
-    }
-  }
-
-  if (!replaced) {
-    subtitleQueue.push(item);
-    // Sort to ensure timeline order even if backend sends chunks slightly out of order
-    subtitleQueue.sort((a, b) => a.segmentStartTs - b.segmentStartTs);
-  }
-
-  // Keep queue large enough to handle high offsets (e.g. 10s offset = ~10-15 chunks)
-  if (subtitleQueue.length > 20) subtitleQueue.shift();
+    msg.chunkId,
+    msg.captionId,
+    msg.phase
+  ));
 }
 
 function showError(msg) {

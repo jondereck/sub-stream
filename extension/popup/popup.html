@@ -114,9 +114,10 @@
           <label>
             Sync mode
             <select id="syncMode">
-              <option value="auto_local_whisper" selected>Auto sync for Local Whisper</option>
+              <option value="auto" selected>Auto timeline sync</option>
               <option value="manual">Manual only</option>
             </select>
+            <span class="field-help">Auto uses subtitle timeline metadata. Local Whisper can also learn a saved lag correction.</span>
           </label>
 
           <div class="sync-metrics" aria-live="polite">
@@ -127,6 +128,7 @@
             <div><span>Total auto</span><strong id="syncAutoOffset">0.0s</strong></div>
             <div><span>Effective offset</span><strong id="syncEffectiveOffset">0.0s</strong></div>
           </div>
+          <span class="field-help">Status only: these cards are read-only. Use Manual offset above to move subtitles earlier or later.</span>
         </div>
       </section>
 

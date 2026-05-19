@@ -42,14 +42,14 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 8,
+  settingsVersion: 9,
   sourceLang: 'auto',
   targetLang: 'en',
   fontSize: 28,
   position: 'bottom',
   subtitleDelayMs: 0,
   subtitleDurationMs: 2600,
-  syncMode: 'auto_local_whisper',
+  syncMode: 'auto',
   transcriber: 'openai-realtime',
   backendUrl: 'ws://127.0.0.1:8765/ws',
   realtimeLatency: 'balanced',
@@ -197,7 +197,10 @@ async function loadSettings() {
   }
   s.subtitleDelayMs = clampSubtitleDelayMs(s.subtitleDelayMs);
   s.subtitleDurationMs = clampSubtitleDurationMs(s.subtitleDurationMs);
-  if (!['manual', 'auto_local_whisper'].includes(s.syncMode)) {
+  if (s.syncMode === 'auto_local_whisper') {
+    s.syncMode = 'auto';
+  }
+  if (!['manual', 'auto'].includes(s.syncMode)) {
     s.syncMode = DEFAULTS.syncMode;
   }
   s.settingsVersion = DEFAULTS.settingsVersion;
@@ -230,7 +233,7 @@ function readSettingsFromForm() {
     position: els.position.value,
     subtitleDelayMs: clampSubtitleDelayMs(els.subtitleDelay.value),
     subtitleDurationMs: clampSubtitleDurationMs(els.subtitleDuration.value),
-    syncMode: els.syncMode.value === 'manual' ? 'manual' : 'auto_local_whisper',
+    syncMode: els.syncMode.value === 'manual' ? 'manual' : 'auto',
     transcriber: els.transcriber.value,
     backendUrl: els.backendUrl.value.trim() || DEFAULTS.backendUrl,
     realtimeLatency: els.realtimeLatency.value,

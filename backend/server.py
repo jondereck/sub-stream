@@ -49,7 +49,7 @@ def _register_nvidia_dll_dirs() -> None:
     # `nvidia.cublas` etc are themselves PEP-420 namespace packages — they have
     # no __init__.py, so __file__ is None. Use __path__ (which IS populated for
     # namespace packages) to locate the install root.
-    nvidia_root: Path | None = None
+    nvidia_root: Optional[Path] = None
     for mod_name in ("nvidia.cublas", "nvidia.cudnn", "nvidia.cuda_nvrtc"):
         try:
             mod = __import__(mod_name, fromlist=["__path__"])
@@ -114,7 +114,7 @@ from pydantic import BaseModel, Field
 from config import (
     MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR, TRANSCRIBER,
     HOST, PORT, SAMPLE_RATE, REALTIME_SAMPLE_RATE, VAD_FILTER,
-    MAX_CHUNK_LAG_S, MOBILE_TOKEN,
+    MAX_CHUNK_LAG_S, MOBILE_TOKEN, OPENAI_TRANSLATION_MODEL,
 )
 
 log = logging.getLogger("sub-stream-ai")
@@ -131,6 +131,9 @@ OPENAI_REALTIME_CONNECT_TIMEOUT_S = float(os.getenv("OPENAI_REALTIME_CONNECT_TIM
 REALTIME_TRANSCRIBER = "openai-realtime"
 REALTIME_PHRASE_CHARS = 72
 REALTIME_PHRASE_IDLE_S = 0.75
+REALTIME_MIN_SEGMENT_S = 0.45
+REALTIME_MAX_SEGMENT_S = 4.0
+REALTIME_TEXT_SECONDS_PER_CHAR = 1 / 16
 REALTIME_LATENCY_PROFILES = {
     "fast": {"phrase_chars": 56, "idle_s": 1.0},
     "balanced": {"phrase_chars": 72, "idle_s": 1.6},
@@ -165,28 +168,28 @@ class ApiKeySaveRequest(BaseModel):
 
 
 class ApiKeyTestRequest(BaseModel):
-    apiKey: str | None = Field(default=None, max_length=300)
+    apiKey: Optional[str] = Field(default=None, max_length=300)
 
 
 class ApiKeyStatusResponse(BaseModel):
     configured: bool
-    source: str | None = None
-    masked: str | None = None
+    source: Optional[str] = None
+    masked: Optional[str] = None
 
 
 class ApiKeyActionResponse(BaseModel):
     ok: bool
     configured: bool
-    message: str | None = None
-    source: str | None = None
-    masked: str | None = None
+    message: Optional[str] = None
+    source: Optional[str] = None
+    masked: Optional[str] = None
 
 
 def mobile_token_required() -> bool:
     return bool(MOBILE_TOKEN.strip())
 
 
-def mobile_token_matches(value: str | None) -> bool:
+def mobile_token_matches(value: Optional[str]) -> bool:
     if not mobile_token_required():
         return True
     return hmac.compare_digest((value or "").strip(), MOBILE_TOKEN.strip())
@@ -196,25 +199,25 @@ def is_android_client(cfg: dict) -> bool:
     return (cfg.get("client") or "").strip().lower() == "android"
 
 
-def validate_mobile_ws_config(cfg: dict) -> str | None:
+def validate_mobile_ws_config(cfg: dict) -> Optional[str]:
     if is_android_client(cfg) and not mobile_token_matches(cfg.get("token")):
         return "Android client token is missing or invalid."
     return None
 
 
-def require_mobile_token(token: str | None) -> None:
+def require_mobile_token(token: Optional[str]) -> None:
     if not mobile_token_matches(token):
         raise HTTPException(status_code=403, detail="Invalid mobile token.")
 
 
-def safe_source_lang_or_error(value: str | None) -> str:
+def safe_source_lang_or_error(value: Optional[str]) -> str:
     lang = (value or "auto").strip().lower()
     if lang not in ALLOWED_SOURCE_LANGS:
         raise HTTPException(status_code=400, detail="Unsupported source language.")
     return lang
 
 
-def safe_target_lang_or_error(value: str | None) -> str:
+def safe_target_lang_or_error(value: Optional[str]) -> str:
     lang = (value or "ar").strip().lower()
     if lang not in ALLOWED_TARGET_LANGS:
         raise HTTPException(status_code=400, detail="Unsupported target language.")
@@ -288,7 +291,7 @@ def decode_stored_secret(payload: bytes) -> str:
     return payload.decode("utf-8")
 
 
-def read_stored_openai_key() -> str | None:
+def read_stored_openai_key() -> Optional[str]:
     path = api_key_store_path()
     if not path.exists():
         return None
@@ -325,12 +328,12 @@ def delete_stored_openai_key() -> bool:
         raise HTTPException(status_code=500, detail="Could not clear saved API key.") from e
 
 
-def normalize_openai_key(api_key: str | None) -> str | None:
+def normalize_openai_key(api_key: Optional[str]) -> Optional[str]:
     key = (api_key or "").strip()
     return key or None
 
 
-def mask_openai_key(api_key: str | None) -> str | None:
+def mask_openai_key(api_key: Optional[str]) -> Optional[str]:
     key = normalize_openai_key(api_key)
     if not key:
         return None
@@ -339,7 +342,7 @@ def mask_openai_key(api_key: str | None) -> str | None:
     return f"{key[:8]}...{key[-4:]}"
 
 
-def resolve_openai_api_key(context: str) -> tuple[str | None, str | None]:
+def resolve_openai_api_key(context: str) -> tuple[Optional[str], Optional[str]]:
     stored_key = read_stored_openai_key()
     raw_env_key = os.getenv("OPENAI_API_KEY")
     env_key = normalize_openai_key(raw_env_key)
@@ -372,8 +375,8 @@ class OpenAIRealtimeError(Exception):
         message: str,
         *,
         code: str = "openai_realtime_error",
-        status: int | None = None,
-        body: str | None = None,
+        status: Optional[int] = None,
+        body: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -382,7 +385,7 @@ class OpenAIRealtimeError(Exception):
         self.body = body
 
 
-def openai_error_message(code: str, status: int | None = None, body: str | None = None) -> str:
+def openai_error_message(code: str, status: Optional[int] = None, body: Optional[str] = None) -> str:
     normalized_code = (code or "").lower()
     if "invalid_api_key" in normalized_code or status == 401:
         return "invalid_api_key: OpenAI rejected the API key. Check that the key is active and was copied correctly."
@@ -402,7 +405,7 @@ def openai_error_message(code: str, status: int | None = None, body: str | None 
     return "OpenAI realtime connection failed. Check API key, billing, rate limits, and internet connection."
 
 
-def parse_openai_error_code(body: str | None, status: int | None = None) -> str:
+def parse_openai_error_code(body: Optional[str], status: Optional[int] = None) -> str:
     if status == 401:
         return "invalid_api_key"
     if status == 402:
@@ -514,7 +517,7 @@ async def wait_for_openai_session_ack(upstream, *, context: str) -> None:
     )
 
 
-def extract_ws_status(exc: Exception) -> tuple[int | None, str | None]:
+def extract_ws_status(exc: Exception) -> tuple[Optional[int], Optional[str]]:
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", None) or getattr(response, "status", None)
     body = None
@@ -528,7 +531,7 @@ def extract_ws_status(exc: Exception) -> tuple[int | None, str | None]:
     return status, body
 
 
-def log_openai_key_state(context: str, api_key: str | None, source: str | None) -> None:
+def log_openai_key_state(context: str, api_key: Optional[str], source: Optional[str]) -> None:
     log.info(
         "openai api key state context=%s loaded=%s source=%s masked=%s",
         context,
@@ -563,7 +566,7 @@ async def validate_openai_key(api_key: str, *, source: str = "provided") -> None
         raise HTTPException(status_code=400, detail=e.message) from e
 
 
-def require_request_openai_key(api_key: str | None) -> str:
+def require_request_openai_key(api_key: Optional[str]) -> str:
     key = normalize_openai_key(api_key)
     if not key:
         raise HTTPException(
@@ -617,7 +620,7 @@ def verify_stored_openai_key_or_error(expected_key: str) -> None:
         raise saved_key_not_persisted_error()
 
 
-def restore_previous_openai_key(previous_key: str | None) -> None:
+def restore_previous_openai_key(previous_key: Optional[str]) -> None:
     try:
         if previous_key:
             write_stored_openai_key(previous_key)
@@ -628,7 +631,7 @@ def restore_previous_openai_key(previous_key: str | None) -> None:
 
 
 async def save_and_resolve_openai_key(
-    raw_api_key: str | None,
+    raw_api_key: Optional[str],
     *,
     context: str,
     test_connection: bool,
@@ -762,18 +765,296 @@ def looks_like_hallucination(text: str) -> bool:
 
 
 # ----- translation ----------------------------------------------------------
+LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "tr": "Turkish",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "hi": "Hindi",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "id": "Indonesian",
+    "ms": "Malay",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "fil": "Filipino",
+    "auto": "the detected source language",
+}
+
+
+def language_name(code: Optional[str]) -> str:
+    normalized = (code or "auto").strip().lower()
+    return LANGUAGE_NAMES.get(normalized, normalized or "the detected source language")
+
+
+_FILLER_TOKENS = {
+    "ah",
+    "eh",
+    "er",
+    "erm",
+    "hm",
+    "hmm",
+    "mm",
+    "mhm",
+    "uh",
+    "uhh",
+    "uhm",
+    "um",
+}
+_UNSTABLE_SINGLE_WORDS = {
+    "a",
+    "am",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "but",
+    "for",
+    "he",
+    "i",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "she",
+    "so",
+    "that",
+    "the",
+    "they",
+    "this",
+    "to",
+    "we",
+    "you",
+}
+_TOKEN_STRIP_CHARS = " \t\r\n.,!?;:()[]{}\"'`"
+_NOISE_ONLY_RE = re.compile(
+    r"^\s*[\[\(]?\s*(?:background\s+music|music|applause|laughter|laughs|noise|"
+    r"silence|inaudible|foreign\s+language|speaking\s+foreign\s+language|"
+    r"crosstalk)\s*[\]\)]?\s*$",
+    re.IGNORECASE,
+)
+_WORD_RE = re.compile(r"\b[\w']+\b", re.UNICODE)
+
+
+@dataclass
+class PreparedTranscript:
+    text: str
+    held: bool = False
+    reason: Optional[str] = None
+    raw: str = ""
+    pending_age_s: float = 0.0
+
+
+def _token_key(token: str) -> str:
+    return token.strip(_TOKEN_STRIP_CHARS).casefold()
+
+
+def _transcript_words(text: str) -> list[str]:
+    return [word for word in _WORD_RE.findall(text or "") if word.strip("_")]
+
+
+def _is_filler_token(token: str) -> bool:
+    key = _token_key(token)
+    return bool(key) and key in _FILLER_TOKENS
+
+
+def _strip_edge_fillers(text: str) -> str:
+    parts = text.split()
+    if not parts:
+        return ""
+    if all(_is_filler_token(part) for part in parts):
+        return ""
+    while len(parts) > 1 and _is_filler_token(parts[0]):
+        parts.pop(0)
+    while len(parts) > 1 and _is_filler_token(parts[-1]):
+        parts.pop()
+    return " ".join(parts)
+
+
+def _collapse_repeated_tokens(text: str) -> str:
+    parts = text.split()
+    if not parts:
+        return ""
+
+    output: list[str] = []
+    last_key = ""
+    repeat_count = 0
+    for part in parts:
+        key = _token_key(part)
+        if key and key == last_key:
+            repeat_count += 1
+        else:
+            last_key = key
+            repeat_count = 1
+
+        max_repeats = 1 if key in _FILLER_TOKENS else 2
+        if not key or repeat_count <= max_repeats:
+            output.append(part)
+
+    return " ".join(output)
+
+
+def cleanup_transcript_text(text: str) -> str:
+    cleaned = (text or "").replace("\ufeff", " ").replace("\u200b", " ")
+    cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned or _NOISE_ONLY_RE.search(cleaned):
+        return ""
+
+    cleaned = re.sub(r"\.{4,}", "...", cleaned)
+    cleaned = re.sub(r"([!?])\1{1,}", r"\1", cleaned)
+    cleaned = re.sub(r"([,;:])\1{1,}", r"\1", cleaned)
+    cleaned = re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
+    cleaned = re.sub(r"([¿¡])\s+", r"\1", cleaned)
+    cleaned = _strip_edge_fillers(cleaned)
+    cleaned = _collapse_repeated_tokens(cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def merge_transcript_fragments(previous: str, current: str) -> str:
+    previous = cleanup_transcript_text(previous)
+    current = cleanup_transcript_text(current)
+    if not previous:
+        return current
+    if not current:
+        return previous
+    if previous.endswith("-"):
+        return cleanup_transcript_text(previous[:-1] + current)
+    if current[0] in ".,!?;:":
+        return cleanup_transcript_text(previous + current)
+    return cleanup_transcript_text(previous + " " + current)
+
+
+def transcript_has_boundary(text: str) -> bool:
+    return bool(re.search(r"[.!?。！？؟]\s*$", text or ""))
+
+
+def transcript_needs_more_context(text: str, *, had_pending: bool, pending_age_s: float) -> bool:
+    cleaned = cleanup_transcript_text(text)
+    if not cleaned:
+        return False
+    if transcript_has_boundary(cleaned):
+        return False
+    if had_pending and pending_age_s >= 1.2:
+        return False
+
+    words = _transcript_words(cleaned)
+    compact_len = len(re.sub(r"\s+", "", cleaned))
+    if len(words) == 1:
+        key = _token_key(words[0])
+        return key in _UNSTABLE_SINGLE_WORDS or compact_len <= 2
+    if len(words) == 2 and compact_len < 10 and not had_pending:
+        return True
+    return False
+
+
+@dataclass
+class TranscriptStabilityBuffer:
+    pending_text: str = ""
+    pending_since: Optional[float] = None
+
+    def reset(self) -> None:
+        self.pending_text = ""
+        self.pending_since = None
+
+    def prepare(self, text: str, *, force: bool = False) -> PreparedTranscript:
+        cleaned = cleanup_transcript_text(text)
+        if not cleaned:
+            self.reset()
+            return PreparedTranscript(text="", reason="empty-or-noise", raw=text)
+
+        now = time.time()
+        had_pending = bool(self.pending_text)
+        if had_pending and self.pending_since is None:
+            self.pending_since = now
+        pending_age_s = now - self.pending_since if self.pending_since is not None else 0.0
+        candidate = merge_transcript_fragments(self.pending_text, cleaned) if had_pending else cleaned
+
+        if looks_like_hallucination(candidate):
+            self.reset()
+            return PreparedTranscript(text="", reason="hallucination", raw=text)
+
+        if not force and transcript_needs_more_context(
+            candidate,
+            had_pending=had_pending,
+            pending_age_s=pending_age_s,
+        ):
+            self.pending_text = candidate
+            if self.pending_since is None:
+                self.pending_since = now
+            return PreparedTranscript(
+                text="",
+                held=True,
+                reason="unstable-fragment",
+                raw=text,
+                pending_age_s=pending_age_s,
+            )
+
+        self.reset()
+        return PreparedTranscript(text=candidate, raw=text, pending_age_s=pending_age_s)
+
+
+def translate_with_google(text: str, src: str, tgt: str) -> str:
+    from deep_translator import GoogleTranslator
+    src_arg = "auto" if src in (None, "", "auto") else src
+    return GoogleTranslator(source=src_arg, target=tgt).translate(text)
+
+
+def translate_with_openai(text: str, src: str, tgt: str) -> str:
+    client = get_openai_client()
+    response = client.responses.create(
+        model=OPENAI_TRANSLATION_MODEL,
+        instructions=(
+            "You are a professional subtitle translator for live captions. "
+            f"Translate from {language_name(src)} to clean, natural {language_name(tgt)}. "
+            "Write subtitle-friendly text, not a literal word-by-word gloss. "
+            "Remove obvious ASR junk, repeated filler, stutters, and meaningless fragments. "
+            "If the input is incomplete, produce the most natural readable subtitle that preserves the intent. "
+            "Do not leave source-language words unless they are proper nouns, names, titles, brands, or quoted terms. "
+            "Preserve names, numbers, speaker intent, and important tone. "
+            "Output only the final subtitle text."
+        ),
+        input=cleanup_transcript_text(text),
+        max_output_tokens=400,
+    )
+    translated = (getattr(response, "output_text", "") or "").strip()
+    return cleanup_transcript_text(translated) or cleanup_transcript_text(text)
+
+
 def translate(text: str, src: str, tgt: str) -> str:
-    if not text.strip() or src == tgt:
+    text = cleanup_transcript_text(text)
+    if not text or src == tgt:
         return text
     if TRANSLATOR == "none":
         return text
-    try:
-        if TRANSLATOR == "google":
-            from deep_translator import GoogleTranslator
-            src_arg = "auto" if src in (None, "", "auto") else src
-            return GoogleTranslator(source=src_arg, target=tgt).translate(text)
-    except Exception as e:
-        log.warning("translation failed (%s -> %s): %s", src, tgt, e)
+
+    if TRANSLATOR in ("openai", "gpt"):
+        try:
+            return translate_with_openai(text, src, tgt)
+        except Exception as e:
+            log.warning(
+                "openai translation failed model=%s (%s -> %s): %s; falling back to google",
+                OPENAI_TRANSLATION_MODEL,
+                src,
+                tgt,
+                e,
+            )
+
+    if TRANSLATOR in ("openai", "gpt", "google"):
+        try:
+            return translate_with_google(text, src, tgt)
+        except Exception as e:
+            log.warning("google translation failed (%s -> %s): %s", src, tgt, e)
+
     return text
 
 
@@ -782,8 +1063,8 @@ def translate(text: str, src: str, tgt: str) -> str:
 class SyncSnapshot:
     session_id: str
     engine: str
-    whisper_model: str | None
-    device: str | None
+    whisper_model: Optional[str]
+    device: Optional[str]
     sample_count: int
     rolling_avg_latency_s: float
     recommended_auto_offset_s: float
@@ -794,8 +1075,8 @@ class SyncSnapshot:
 class SessionLatencyTracker:
     session_id: str
     engine: str
-    whisper_model: str | None = None
-    device: str | None = None
+    whisper_model: Optional[str] = None
+    device: Optional[str] = None
     max_samples: int = 12
     min_valid_latency_s: float = 0.2
     max_valid_latency_s: float = 6.0
@@ -803,7 +1084,7 @@ class SessionLatencyTracker:
     min_auto_offset_s: float = -1.5
     max_auto_offset_s: float = 0.0
     samples: Deque[float] = field(default_factory=lambda: deque(maxlen=12))
-    last_snapshot: SyncSnapshot | None = None
+    last_snapshot: Optional[SyncSnapshot] = None
     _lock: Lock = field(default_factory=Lock)
 
     def __post_init__(self) -> None:
@@ -812,8 +1093,8 @@ class SessionLatencyTracker:
 
     def register_transcript_emit(
         self,
-        captured_at: float | None,
-        emitted_at: float | None = None,
+        captured_at: Optional[float],
+        emitted_at: Optional[float] = None,
     ) -> SyncSnapshot:
         if emitted_at is None:
             emitted_at = time.time()
@@ -898,8 +1179,10 @@ class Session:
     task: str = "transcribe"
     transcriber: str = TRANSCRIBER if TRANSCRIBER in ALLOWED_TRANSCRIBERS else "local"
     chunk_id: int = 0
-    next_chunk_id: int | None = None
-    next_chunk_captured_at: float | None = None
+    next_chunk_id: Optional[int] = None
+    next_chunk_captured_at: Optional[float] = None
+    local_transcript_buffer: TranscriptStabilityBuffer = field(default_factory=TranscriptStabilityBuffer)
+    realtime_transcript_buffer: TranscriptStabilityBuffer = field(default_factory=TranscriptStabilityBuffer)
     sync_tracker: SessionLatencyTracker = field(init=False)
 
     def __post_init__(self) -> None:
@@ -915,8 +1198,151 @@ class Session:
 class ChunkItem:
     raw_bytes: bytes
     arrived_at: float
-    captured_at: float | None = None
-    client_chunk_id: int | None = None
+    captured_at: Optional[float] = None
+    client_chunk_id: Optional[int] = None
+
+
+@dataclass
+class AudioChunkTiming:
+    chunk_id: int
+    start_ts: float
+    end_ts: float
+    received_at: float
+
+
+class RealtimeAudioTimeline:
+    """Tracks capture-time windows for realtime audio frames sent upstream."""
+
+    def __init__(self, max_chunks: int = 1200) -> None:
+        self.chunks: Deque[AudioChunkTiming] = deque(maxlen=max_chunks)
+        self.last_chunk_id = 0
+        self.phrase_start_ts: Optional[float] = None
+
+    def add_chunk(
+        self,
+        *,
+        raw_bytes: bytes,
+        sample_rate: int,
+        received_at: float,
+        chunk_id: Optional[int] = None,
+        captured_at: Optional[float] = None,
+        duration: Optional[float] = None,
+    ) -> AudioChunkTiming:
+        if chunk_id is None:
+            chunk_id = self.last_chunk_id + 1
+        self.last_chunk_id = max(self.last_chunk_id, chunk_id)
+
+        duration_s = valid_duration(duration)
+        if duration_s is None:
+            duration_s = chunk_duration_s(len(raw_bytes) // 2, sample_rate)
+
+        previous = self.chunks[-1] if self.chunks else None
+        if captured_at is None:
+            captured_at = previous.end_ts if previous else received_at
+
+        timing = AudioChunkTiming(
+            chunk_id=chunk_id,
+            start_ts=captured_at,
+            end_ts=max(captured_at + duration_s, captured_at + 0.001),
+            received_at=received_at,
+        )
+        self.chunks.append(timing)
+        log.info(
+            "realtime chunk #%d: chunkStartTs=%.3f chunkEndTs=%.3f receivedAt=%.3f",
+            timing.chunk_id,
+            timing.start_ts,
+            timing.end_ts,
+            timing.received_at,
+        )
+        return timing
+
+    def caption_window(self, text: str, *, is_final: bool, now: float) -> AudioChunkTiming:
+        latest = self.chunks[-1] if self.chunks else None
+        if latest is None:
+            fallback_duration = caption_duration_s(text)
+            start_ts = now
+            end_ts = now + fallback_duration
+            chunk_id = self.last_chunk_id + 1
+            self.last_chunk_id = chunk_id
+            return AudioChunkTiming(chunk_id, start_ts, end_ts, now)
+
+        if self.phrase_start_ts is None:
+            target_duration = caption_duration_s(text)
+            self.phrase_start_ts = max(latest.start_ts, latest.end_ts - target_duration)
+
+        end_ts = max(latest.end_ts, self.phrase_start_ts + REALTIME_MIN_SEGMENT_S)
+        if end_ts - self.phrase_start_ts > REALTIME_MAX_SEGMENT_S:
+            self.phrase_start_ts = end_ts - REALTIME_MAX_SEGMENT_S
+
+        timing = AudioChunkTiming(latest.chunk_id, self.phrase_start_ts, end_ts, latest.received_at)
+        if is_final:
+            self.phrase_start_ts = None
+        return timing
+
+    def reset_phrase(self) -> None:
+        self.phrase_start_ts = None
+
+
+def valid_duration(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return None
+    if duration <= 0 or duration > 30:
+        return None
+    return duration
+
+
+def chunk_duration_s(sample_count: int, sample_rate: int) -> float:
+    if sample_count <= 0 or sample_rate <= 0:
+        return 0.001
+    return sample_count / sample_rate
+
+
+def caption_duration_s(text: str) -> float:
+    text_len = len((text or "").strip())
+    estimated = text_len * REALTIME_TEXT_SECONDS_PER_CHAR
+    return max(REALTIME_MIN_SEGMENT_S, min(REALTIME_MAX_SEGMENT_S, estimated))
+
+
+def chunk_timing_payload(
+    *,
+    chunk_id: int,
+    received_at: float,
+    sample_count: int,
+    sample_rate: int,
+    captured_at: Optional[float] = None,
+    segment_start_rel: Optional[float] = None,
+    segment_end_rel: Optional[float] = None,
+) -> dict:
+    base_ts = captured_at if captured_at is not None else received_at
+    duration_s = chunk_duration_s(sample_count, sample_rate)
+    segment_start_ts = base_ts + segment_start_rel if segment_start_rel is not None else base_ts
+    segment_end_ts = base_ts + segment_end_rel if segment_end_rel is not None else base_ts + duration_s
+    if segment_end_ts <= segment_start_ts:
+        segment_end_ts = segment_start_ts + max(duration_s, REALTIME_MIN_SEGMENT_S)
+
+    log.info(
+        "chunk #%d: chunkStartTs=%.3f chunkEndTs=%.3f segmentStartTs=%.3f segmentEndTs=%.3f receivedAt=%.3f",
+        chunk_id,
+        base_ts,
+        base_ts + duration_s,
+        segment_start_ts,
+        segment_end_ts,
+        received_at,
+    )
+    return {
+        "chunkId": chunk_id,
+        "receivedAt": received_at,
+        "segmentStartTs": segment_start_ts,
+        "segmentEndTs": segment_end_ts,
+    }
+
+
+def caption_id_for(session: Session, prefix: str, chunk_id: int) -> str:
+    return f"{session.session_id}:{prefix}:{chunk_id}"
 
 
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
@@ -924,17 +1350,17 @@ def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str,
     return transcribe_chunk_local(session, pcm_int16)
 
 
-def safe_transcriber(value: str | None) -> str:
+def safe_transcriber(value: Optional[str]) -> str:
     transcriber = (value or TRANSCRIBER or "local").strip().lower()
     return transcriber if transcriber in ALLOWED_TRANSCRIBERS else "local"
 
 
-def safe_target_lang(value: str | None) -> str:
+def safe_target_lang(value: Optional[str]) -> str:
     lang = (value or "ar").strip().lower()
     return lang if lang in ALLOWED_TARGET_LANGS else "ar"
 
 
-def safe_realtime_latency(value: str | None) -> str:
+def safe_realtime_latency(value: Optional[str]) -> str:
     latency = (value or "balanced").strip().lower()
     return latency if latency in REALTIME_LATENCY_PROFILES else "balanced"
 
@@ -972,6 +1398,9 @@ def apply_config(session: Session, cfg: dict) -> None:
     session.target_lang = safe_target_lang(cfg.get("targetLang", session.target_lang))
     session.realtime_latency = safe_realtime_latency(cfg.get("realtimeLatency", session.realtime_latency))
     session.task = cfg.get("task", session.task) or "transcribe"
+    if any(key in cfg for key in ("sourceLang", "targetLang", "task", "transcriber")):
+        session.local_transcript_buffer.reset()
+        session.realtime_transcript_buffer.reset()
 
 
 def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
@@ -981,10 +1410,11 @@ def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str
     audio = pcm_int16.astype(np.float32) / 32768.0
     model = get_model()
     lang = None if session.source_lang in (None, "", "auto") else session.source_lang
+    whisper_task = "translate" if session.task == "translate" and session.target_lang == "en" else "transcribe"
     segments, info = model.transcribe(
         audio,
         language=lang,
-        task=session.task if session.task in ("transcribe", "translate") else "transcribe",
+        task=whisper_task,
         vad_filter=VAD_FILTER,
         beam_size=1,                   # fast; bump to 5 for quality
         # initial_prompt is intentionally OMITTED. It primes whisper with the
@@ -1031,8 +1461,8 @@ async def _handle_chunk(
     loop,
     raw_bytes: bytes,
     arrived_at: float,
-    captured_at: float | None = None,
-    client_chunk_id: int | None = None,
+    captured_at: Optional[float] = None,
+    client_chunk_id: Optional[int] = None,
 ) -> None:
     """One audio chunk: silence-gate -> transcribe -> translate -> send."""
     if client_chunk_id is not None:
@@ -1042,22 +1472,40 @@ async def _handle_chunk(
         session.chunk_id += 1
         cid = session.chunk_id
 
+    caption_id = caption_id_for(session, "chunk", cid)
+    pcm = np.frombuffer(raw_bytes, dtype=np.int16)
+    timing = chunk_timing_payload(
+        chunk_id=cid,
+        received_at=arrived_at,
+        sample_count=pcm.size,
+        sample_rate=session.sample_rate,
+        captured_at=captured_at,
+    )
+
     # Backlog drop. If processing has slipped behind real-time, this chunk
     # is already stale by the time we get to it. Subs from 15s ago are
     # worse UX than no subs at all — drop and let the next (fresher) chunk
     # catch us up. Send empty so the overlay clears.
-    lag = time.time() - captured_at if captured_at else time.monotonic() - arrived_at
+    lag = time.time() - captured_at if captured_at else time.time() - arrived_at
     if lag > MAX_CHUNK_LAG_S:
+        session.local_transcript_buffer.reset()
         log.info("chunk #%d: dropped (lag=%.2fs > %.1fs)", cid, lag, MAX_CHUNK_LAG_S)
+        log.info(
+            "transcript emitted chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+            cid,
+            timing["segmentStartTs"],
+            timing["segmentEndTs"],
+        )
         await ws.send_text(json.dumps({
             "type": "transcript",
             "text": "", "raw": "",
-            "chunkId": cid, "isFinal": True, "dropped": "lag",
+            "captionId": caption_id,
+            "phase": "source-final",
+            "isFinal": True, "dropped": "lag",
+            **timing,
             "sync": sync_payload(session.sync_tracker.current_snapshot()),
         }))
         return
-
-    pcm = np.frombuffer(raw_bytes, dtype=np.int16)
 
     if pcm.size:
         rms = float(np.sqrt(np.mean((pcm.astype(np.float32) / 32768.0) ** 2)))
@@ -1071,39 +1519,55 @@ async def _handle_chunk(
     # send empty text so the overlay clears.
     SILENCE_RMS = 0.005   # voice/music typically > 0.05
     if rms < SILENCE_RMS:
+        session.local_transcript_buffer.reset()
         log.info("chunk #%d: silence skip (rms=%.4f peak=%.3f)", cid, rms, peak)
+        log.info(
+            "transcript emitted chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+            cid,
+            timing["segmentStartTs"],
+            timing["segmentEndTs"],
+        )
         await ws.send_text(json.dumps({
             "type": "transcript",
             "text": "", "raw": "",
-            "chunkId": cid, "isFinal": True, "silence": True,
+            "captionId": caption_id,
+            "phase": "source-final",
+            "isFinal": True, "silence": True,
+            **timing,
             "sync": sync_payload(session.sync_tracker.current_snapshot()),
         }))
         return
 
     raw, detected, s_rel, e_rel = await loop.run_in_executor(None, transcribe_chunk, session, pcm)
     emitted_at = time.time()
-
-    # Calculate absolute timestamps based on when the chunk was captured.
-    # We prefer captured_at if provided by the client, otherwise we fall back
-    # to a best-effort estimate based on arrival time and current lag.
-    captured_at_val = captured_at if captured_at else (emitted_at - lag)
-    s_abs = captured_at_val + s_rel if s_rel is not None else captured_at_val
-    e_abs = captured_at_val + e_rel if e_rel is not None else (captured_at_val + (pcm.size / session.sample_rate))
-
-    log.info("chunk #%d: receivedAt=%.3f capturedAt=%.3f startTs=%.3f endTs=%.3f",
-             cid, arrived_at, captured_at_val, s_abs, e_abs)
+    timing = chunk_timing_payload(
+        chunk_id=cid,
+        received_at=arrived_at,
+        sample_count=pcm.size,
+        sample_rate=session.sample_rate,
+        captured_at=captured_at if captured_at is not None else emitted_at - lag,
+        segment_start_rel=s_rel,
+        segment_end_rel=e_rel,
+    )
 
     if not raw:
+        session.local_transcript_buffer.reset()
         log.info("chunk #%d: empty transcript (lang=%s) rms=%.4f peak=%.3f",
                  cid, detected, rms, peak)
+        log.info(
+            "transcript emitted chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+            cid,
+            timing["segmentStartTs"],
+            timing["segmentEndTs"],
+        )
         await ws.send_text(json.dumps({
             "type": "transcript",
             "text": "", "raw": "",
-            "chunkId": cid, "isFinal": True, "empty": True,
-            "receivedAt": arrived_at,
+            "captionId": caption_id,
+            "phase": "source-final",
+            "isFinal": True, "empty": True,
+            **timing,
             "transcriptEmittedAt": emitted_at,
-            "segmentStartTs": s_abs,
-            "segmentEndTs": e_abs,
             "sync": sync_payload(session.sync_tracker.current_snapshot()),
         }))
         return
@@ -1112,59 +1576,114 @@ async def _handle_chunk(
     # adding to history. If we add them to history they prime more
     # hallucinations on subsequent chunks via initial_prompt context.
     if looks_like_hallucination(raw):
+        session.local_transcript_buffer.reset()
         log.info("chunk #%d: hallucination filter dropped raw=%r", cid, raw)
+        log.info(
+            "transcript emitted chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+            cid,
+            timing["segmentStartTs"],
+            timing["segmentEndTs"],
+        )
         await ws.send_text(json.dumps({
             "type": "transcript",
             "text": "", "raw": raw,
-            "chunkId": cid, "isFinal": True, "filtered": "hallucination",
-            "receivedAt": arrived_at,
+            "captionId": caption_id,
+            "phase": "source-final",
+            "isFinal": True, "filtered": "hallucination",
+            **timing,
             "transcriptEmittedAt": emitted_at,
-            "segmentStartTs": s_abs,
-            "segmentEndTs": e_abs,
             "sync": sync_payload(session.sync_tracker.current_snapshot()),
         }, ensure_ascii=False))
         return
 
-    src = detected if session.source_lang == "auto" else session.source_lang
-    if should_translate_session(session) and session.target_lang == "en":
-        out = raw  # whisper already translated to English
-    elif should_translate_session(session):
-        out = await loop.run_in_executor(
-            None, translate, raw, src, session.target_lang
+    prepared = session.local_transcript_buffer.prepare(
+        raw,
+        force=not should_translate_session(session),
+    )
+    if not prepared.text:
+        log.info(
+            "chunk #%d: transcript preparation suppressed raw=%r reason=%s held=%s pendingAge=%.2fs",
+            cid,
+            raw,
+            prepared.reason,
+            prepared.held,
+            prepared.pending_age_s,
         )
-    else:
-        out = raw
+        log.info(
+            "transcript emitted chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+            cid,
+            timing["segmentStartTs"],
+            timing["segmentEndTs"],
+        )
+        await ws.send_text(json.dumps({
+            "type": "transcript",
+            "text": "", "raw": cleanup_transcript_text(raw),
+            "captionId": caption_id,
+            "phase": "source-final",
+            "isFinal": True,
+            "filtered": prepared.reason or "transcript-prep",
+            "held": prepared.held,
+            **timing,
+            "transcriptEmittedAt": emitted_at,
+            "sync": sync_payload(session.sync_tracker.current_snapshot()),
+        }, ensure_ascii=False))
+        return
 
+    source_text = prepared.text
+    src = detected if session.source_lang == "auto" else session.source_lang
+    needs_post_translation = should_translate_session(session) and session.target_lang != "en"
     emitted_at = time.time()
     snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
+
+    if needs_post_translation:
+        out = await loop.run_in_executor(
+            None, translate, source_text, src, session.target_lang
+        )
+        final_phase = "translated-final"
+    elif should_translate_session(session) and session.target_lang == "en":
+        out = source_text  # whisper already translated to English
+        final_phase = "translated-final"
+    else:
+        out = source_text
+        final_phase = "source-final"
+
+    emitted_at = time.time()
+    if needs_post_translation:
+        snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
     log.info(
         "chunk #%d [%s->%s] raw=%r out=%r start=%.3f end=%.3f latency=%.3fs auto_offset=%.3fs",
         cid,
         src,
         session.target_lang,
-        raw,
+        source_text,
         out,
-        s_abs,
-        e_abs,
+        timing["segmentStartTs"],
+        timing["segmentEndTs"],
         snapshot.rolling_avg_latency_s,
         snapshot.recommended_auto_offset_s,
     )
+    log.info(
+        "transcript emitted chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+        cid,
+        timing["segmentStartTs"],
+        timing["segmentEndTs"],
+    )
     await ws.send_text(json.dumps({
         "type": "transcript",
-        "text": out, "raw": raw,
+        "text": out, "raw": source_text,
         "detectedLang": detected,
-        "chunkId": cid, "isFinal": True,
-        "receivedAt": arrived_at,
+        "captionId": caption_id,
+        "phase": final_phase,
+        "isFinal": True,
+        **timing,
         "transcriptEmittedAt": emitted_at,
-        "segmentStartTs": s_abs,
-        "segmentEndTs": e_abs,
         "sync": sync_payload(snapshot),
     }, ensure_ascii=False))
 
 
 async def replace_latest_chunk(
-    queue: asyncio.Queue[ChunkItem | None],
-    item: ChunkItem | None,
+    queue: asyncio.Queue[Optional[ChunkItem]],
+    item: Optional[ChunkItem],
 ) -> None:
     while True:
         try:
@@ -1181,7 +1700,7 @@ async def replace_latest_chunk(
 async def handle_latest_chunk_queue(
     ws: WebSocket,
     session: Session,
-    queue: asyncio.Queue[ChunkItem | None],
+    queue: asyncio.Queue[Optional[ChunkItem]],
 ) -> None:
     loop = asyncio.get_running_loop()
     while True:
@@ -1205,7 +1724,7 @@ async def handle_latest_chunk_queue(
             queue.task_done()
 
 
-def realtime_transcription_session_update(source_lang: str | None = None) -> dict:
+def realtime_transcription_session_update(source_lang: Optional[str] = None) -> dict:
     transcription: dict[str, str] = {"model": OPENAI_REALTIME_TRANSCRIBE_MODEL}
     if source_lang and source_lang != "auto":
         transcription["language"] = source_lang
@@ -1357,51 +1876,71 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             )
 
             caption_state = RealtimeCaptionState(session.realtime_latency)
-            clear_task: asyncio.Task | None = None
+            clear_task: Optional[asyncio.Task] = None
             audio_frames_sent = 0
             audio_bytes_sent = 0
             raw_transcript_parts: list[str] = []
+            realtime_timeline = RealtimeAudioTimeline()
+            pending_chunk_meta: Optional[dict] = None
+            realtime_caption_seq = 0
+            active_caption_id: Optional[str] = None
 
-            phrase_start_ts: float | None = None
-            rt_chunk_id = 0
+            def current_realtime_caption_id() -> str:
+                nonlocal realtime_caption_seq, active_caption_id
+                if active_caption_id is None:
+                    realtime_caption_seq += 1
+                    active_caption_id = caption_id_for(session, "rt", realtime_caption_seq)
+                return active_caption_id
 
-            async def send_realtime_caption(text: str, *, is_final: bool = False, delta: str | None = None) -> None:
-                nonlocal phrase_start_ts, rt_chunk_id
+            def reset_realtime_caption() -> None:
+                nonlocal active_caption_id
+                active_caption_id = None
+
+            async def send_realtime_caption(
+                text: str,
+                *,
+                is_final: bool = False,
+                delta: Optional[str] = None,
+                phase: str = "interim",
+                reset_caption: bool = False,
+            ) -> None:
                 now = time.time()
-                if not phrase_start_ts:
-                    phrase_start_ts = now
-
-                rt_chunk_id += 1
-
-                # Realtime best-effort timestamps.
-                # Start is when the first delta of this phrase arrived.
-                # End is 'now' for deltas, or estimated for final.
-                s_abs = phrase_start_ts
-                e_abs = now + 1.5 if not is_final else now + 0.5
-
-                log.info("realtime transcript emitted: text=%r chunkId=%d start=%.3f end=%.3f",
-                         text, rt_chunk_id, s_abs, e_abs)
+                timing = realtime_timeline.caption_window(text, is_final=is_final, now=now)
+                caption_id = current_realtime_caption_id()
+                log.info(
+                    "realtime transcript emitted: text=%r captionId=%s phase=%s chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+                    text,
+                    caption_id,
+                    phase,
+                    timing.chunk_id,
+                    timing.start_ts,
+                    timing.end_ts,
+                )
 
                 payload = {
                     "type": "transcript",
                     "text": text,
                     "isFinal": is_final,
                     "mode": REALTIME_TRANSCRIBER,
-                    "chunkId": rt_chunk_id,
+                    "captionId": caption_id,
+                    "phase": phase,
+                    "chunkId": timing.chunk_id,
                     "receivedAt": now,
-                    "segmentStartTs": s_abs,
-                    "segmentEndTs": e_abs,
+                    "segmentStartTs": timing.start_ts,
+                    "segmentEndTs": timing.end_ts,
                 }
                 if delta is not None:
                     payload["delta"] = delta
-                if is_final:
-                    phrase_start_ts = None
                 await ws.send_text(json.dumps(payload, ensure_ascii=False))
+                if reset_caption:
+                    reset_realtime_caption()
 
             async def clear_after_idle() -> None:
                 await asyncio.sleep(caption_state.idle_s)
                 caption_state.flush()
-                await send_realtime_caption("", is_final=True)
+                session.realtime_transcript_buffer.reset()
+                realtime_timeline.reset_phrase()
+                await send_realtime_caption("", is_final=True, phase="source-final", reset_caption=True)
 
             def schedule_idle_clear() -> None:
                 nonlocal clear_task
@@ -1410,12 +1949,32 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 clear_task = asyncio.create_task(clear_after_idle())
 
             async def browser_to_openai() -> None:
-                nonlocal audio_frames_sent, audio_bytes_sent
+                nonlocal audio_frames_sent, audio_bytes_sent, pending_chunk_meta
                 while True:
                     msg = await ws.receive()
                     if msg.get("type") == "websocket.disconnect":
                         return
                     if "bytes" in msg and msg["bytes"]:
+                        received_at = time.time()
+                        meta = pending_chunk_meta or {}
+                        pending_chunk_meta = None
+                        try:
+                            meta_chunk_id = int(meta.get("chunkId")) if meta.get("chunkId") is not None else None
+                        except (TypeError, ValueError):
+                            meta_chunk_id = None
+                        try:
+                            meta_captured_at = float(meta.get("capturedAt")) if meta.get("capturedAt") is not None else None
+                        except (TypeError, ValueError):
+                            meta_captured_at = None
+                        meta_duration = valid_duration(meta.get("duration"))
+                        realtime_timeline.add_chunk(
+                            raw_bytes=msg["bytes"],
+                            sample_rate=session.sample_rate,
+                            received_at=received_at,
+                            chunk_id=meta_chunk_id,
+                            captured_at=meta_captured_at,
+                            duration=meta_duration,
+                        )
                         audio_frames_sent += 1
                         audio_bytes_sent += len(msg["bytes"])
                         if audio_frames_sent == 1 or audio_frames_sent % 100 == 0:
@@ -1444,11 +2003,17 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             if session.source_lang != old_source:
                                 raw_transcript_parts.clear()
                                 caption_state.flush()
+                                realtime_timeline.reset_phrase()
+                                reset_realtime_caption()
                                 await upstream.send(json.dumps(realtime_transcription_session_update(session.source_lang)))
                             if session.target_lang != old_target:
                                 raw_transcript_parts.clear()
                                 caption_state.flush()
+                                realtime_timeline.reset_phrase()
+                                reset_realtime_caption()
                                 log.info("realtime target changed target=%s; translation is applied after transcription", session.target_lang)
+                        elif cfg.get("type") == "chunk":
+                            pending_chunk_meta = cfg
 
             async def openai_to_browser() -> None:
                 async for raw in upstream:
@@ -1466,22 +2031,21 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         if not delta:
                             continue
                         log.info("openai realtime transcript delta chars=%d", len(delta))
-                        is_new_buffer = not raw_transcript_parts
                         raw_transcript_parts.append(delta)
-                        if should_translate_session(session):
-                            if is_new_buffer:
-                                if clear_task:
-                                    clear_task.cancel()
-                                await send_realtime_caption("", is_final=False)
-                            log.info(
-                                "openai realtime transcript delta buffered for translation target=%s",
-                                session.target_lang,
-                            )
-                            continue
                         if clear_task:
                             clear_task.cancel()
+                        if should_translate_session(session):
+                            caption_state.append(delta)
+                            schedule_idle_clear()
+                            continue
                         for text, is_final in caption_state.append(delta):
-                            await send_realtime_caption(text, is_final=is_final, delta=delta)
+                            await send_realtime_caption(
+                                text,
+                                is_final=is_final,
+                                delta=delta,
+                                phase="source-final" if is_final else "interim",
+                                reset_caption=is_final,
+                            )
                         schedule_idle_clear()
                     elif event_type in (
                         "conversation.item.input_audio_transcription.completed",
@@ -1492,6 +2056,16 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         raw_transcript_parts.clear()
                         caption_state.flush()
                         log.info("openai realtime transcript completed chars=%d", len(text or ""))
+                        prepared = session.realtime_transcript_buffer.prepare(text, force=True)
+                        if not prepared.text:
+                            log.info(
+                                "openai realtime transcript suppressed reason=%s raw=%r",
+                                prepared.reason,
+                                text,
+                            )
+                            schedule_idle_clear()
+                            continue
+                        text = prepared.text
                         if text and should_translate_session(session):
                             src = session.source_lang if session.source_lang != "auto" else "auto"
                             raw_text = text
@@ -1503,8 +2077,10 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                                 len(raw_text),
                                 len(text or ""),
                             )
-                        if text:
-                            await send_realtime_caption(text, is_final=True)
+                            if text:
+                                await send_realtime_caption(text, is_final=True, phase="translated-final", reset_caption=True)
+                        elif text:
+                            await send_realtime_caption(text, is_final=True, phase="source-final", reset_caption=True)
                         schedule_idle_clear()
                     elif event_type in ("session.created", "transcription_session.created", "transcription_session.updated"):
                         log.info("openai realtime event type=%s", event_type)
@@ -1552,8 +2128,8 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
 async def handle_socket(ws: WebSocket):
     await ws.accept()
     session = Session()
-    chunk_queue: asyncio.Queue[ChunkItem | None] | None = None
-    chunk_worker: asyncio.Task | None = None
+    chunk_queue: Optional[asyncio.Queue[Optional[ChunkItem]]] = None
+    chunk_worker: Optional[asyncio.Task] = None
     log.info("client connected")
 
     try:
@@ -1593,7 +2169,7 @@ async def handle_socket(ws: WebSocket):
                     chunk_queue,
                     ChunkItem(
                         raw_bytes=msg["bytes"],
-                        arrived_at=time.monotonic(),
+                        arrived_at=time.time(),
                         captured_at=session.next_chunk_captured_at,
                         client_chunk_id=session.next_chunk_id,
                     ),
@@ -1675,6 +2251,7 @@ async def root():
         "api_key_masked": mask_openai_key(api_key),
         "ready": True,
         "translator": TRANSLATOR,
+        "openai_translation_model": OPENAI_TRANSLATION_MODEL,
         "ws": f"ws://{HOST}:{PORT}/ws",
         "mobile_token_required": mobile_token_required(),
     }
@@ -1683,12 +2260,12 @@ async def root():
 @app.post("/translate", response_model=TranslateResponse)
 async def translate_text(req: TranslateRequest):
     require_mobile_token(req.token)
-    text = (req.text or "").strip()
-    if not text:
+    prepared = TranscriptStabilityBuffer().prepare((req.text or "")[:MAX_TRANSLATE_CHARS], force=True)
+    if not prepared.text:
         return TranslateResponse(text="")
     src = safe_source_lang_or_error(req.sourceLang)
     tgt = safe_target_lang_or_error(req.targetLang)
-    return TranslateResponse(text=translate(text[:MAX_TRANSLATE_CHARS], src, tgt))
+    return TranslateResponse(text=translate(prepared.text, src, tgt))
 
 
 @app.get("/settings/api-key", response_model=ApiKeyStatusResponse)

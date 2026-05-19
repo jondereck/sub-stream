@@ -7,9 +7,11 @@ const NATIVE_HOST   = 'com.kamisubs.host';
 const AI_USAGE_KEY = 'aiUsageEstimate';
 const CALIBRATIONS_KEY = 'substream.calibrations.v1';
 const REALTIME_TRANSLATE_USD_PER_MIN = 0.034;
+const SYNC_MODE_AUTO = 'auto';
 const SYNC_MODE_MANUAL = 'manual';
 const SYNC_MODE_AUTO_LOCAL_WHISPER = 'auto_local_whisper';
 const LOCAL_WHISPER_ENGINE = 'local-whisper';
+const REALTIME_TRANSCRIBER = 'openai-realtime';
 const MIN_AUTO_STEP_CHANGE_MS = 200;
 const MIN_CALIBRATION_SAMPLES = 8;
 const MIN_CALIBRATION_SAVE_CHANGE_S = 0.1;
@@ -65,9 +67,10 @@ function emptySyncMetrics() {
 }
 
 function syncMode(settings) {
-  return settings && settings.syncMode === SYNC_MODE_AUTO_LOCAL_WHISPER
-    ? SYNC_MODE_AUTO_LOCAL_WHISPER
-    : SYNC_MODE_MANUAL;
+  const value = settings && settings.syncMode;
+  if (value === SYNC_MODE_MANUAL) return SYNC_MODE_MANUAL;
+  if (value === SYNC_MODE_AUTO || value === SYNC_MODE_AUTO_LOCAL_WHISPER) return SYNC_MODE_AUTO;
+  return SYNC_MODE_AUTO;
 }
 
 function manualOffsetS(settings) {
@@ -78,11 +81,25 @@ function manualOffsetS(settings) {
 
 function autoSyncEnabled(settings, backendSync) {
   return (
-    syncMode(settings) === SYNC_MODE_AUTO_LOCAL_WHISPER &&
-    settings &&
-    settings.transcriber === 'local' &&
+    localCalibrationEnabled(settings) &&
     backendSync &&
     backendSync.engine === LOCAL_WHISPER_ENGINE
+  );
+}
+
+function timelineAutoSyncEnabled(settings) {
+  return !!(
+    settings &&
+    syncMode(settings) === SYNC_MODE_AUTO &&
+    (settings.transcriber === 'local' || settings.transcriber === REALTIME_TRANSCRIBER)
+  );
+}
+
+function localCalibrationEnabled(settings) {
+  return !!(
+    settings &&
+    syncMode(settings) === SYNC_MODE_AUTO &&
+    settings.transcriber === 'local'
   );
 }
 
@@ -110,9 +127,9 @@ async function loadCalibrationProfile(settings) {
   activeCalibrationProfile = profile;
   syncMetrics = {
     ...syncMetrics,
-    persistedAutoOffsetS: autoSyncOnForSettings(settings) ? Number(profile && profile.learnedOffsetS) || 0 : 0,
+    persistedAutoOffsetS: localCalibrationEnabled(settings) ? Number(profile && profile.learnedOffsetS) || 0 : 0,
     liveAutoOffsetS: 0,
-    autoOffsetS: autoSyncOnForSettings(settings) ? Number(profile && profile.learnedOffsetS) || 0 : 0,
+    autoOffsetS: localCalibrationEnabled(settings) ? Number(profile && profile.learnedOffsetS) || 0 : 0,
   };
   recomputeSyncMetrics(settings);
   return profile;
@@ -135,18 +152,15 @@ async function saveCalibrationProfile(profile) {
 }
 
 function autoSyncOnForSettings(settings) {
-  return !!(
-    settings &&
-    settings.transcriber === 'local' &&
-    syncMode(settings) === SYNC_MODE_AUTO_LOCAL_WHISPER
-  );
+  return timelineAutoSyncEnabled(settings);
 }
 
 function recomputeSyncMetrics(settings) {
   const manual = manualOffsetS(settings);
   const useAuto = autoSyncOnForSettings(settings);
-  const persistedAuto = useAuto ? Number(syncMetrics.persistedAutoOffsetS) || 0 : 0;
-  const liveAuto = useAuto ? Number(syncMetrics.liveAutoOffsetS) || 0 : 0;
+  const useLocalCalibration = localCalibrationEnabled(settings);
+  const persistedAuto = useLocalCalibration ? Number(syncMetrics.persistedAutoOffsetS) || 0 : 0;
+  const liveAuto = useLocalCalibration ? Number(syncMetrics.liveAutoOffsetS) || 0 : 0;
   const auto = persistedAuto + liveAuto;
   syncMetrics = {
     ...syncMetrics,
@@ -719,6 +733,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 delta: msg.delta,
                 isFinal: msg.isFinal,
                 mode: msg.mode,
+                captionId: msg.captionId,
+                phase: msg.phase,
                 chunkId: msg.chunkId,
                 receivedAt: msg.receivedAt,
                 receivedAtMs,
