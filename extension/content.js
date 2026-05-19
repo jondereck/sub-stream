@@ -11,10 +11,10 @@ const MAX_SUBTITLE_DURATION_MS = 8000;
 
 let overlayEl = null;
 let textEl = null;
-let hideTimer = null;
-let showTimer = null;
 let errorTimer = null;
-let pendingSubtitle = null;
+let activeSubtitle = null;
+let subtitleQueue = [];
+let renderLoopId = null;
 let trackedVideo = null;
 let resizeObserver = null;
 let scrollHandler = null;
@@ -81,7 +81,6 @@ function applySettings(settings, sync) {
   overlayEl.style.setProperty('--kami-font-size', fontSize + 'px');
   const position = settings.position || 'bottom';
   overlayEl.dataset.position = position;
-  schedulePendingSubtitle();
 }
 
 function positionOverlayOverVideo() {
@@ -133,17 +132,15 @@ function mount(settings, sync) {
   if (sync) currentSyncMetrics = sync;
   ensureOverlay(settings);
   trackVideo();
-  // Don't reveal the overlay until we actually have text — otherwise the user
-  // sees an empty black padded box during the seconds before the first chunk.
+  startRenderLoop();
 }
 
 function unmount() {
-  clearPendingSubtitle();
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+  stopRenderLoop();
+  activeSubtitle = null;
+  subtitleQueue = [];
   if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
   untrackVideo();
-  // Belt-and-suspenders: remove every #kami-subs-overlay in the DOM, not just
-  // the one we hold a ref to (defensive against orphans from previous loads).
   document.querySelectorAll('#' + OVERLAY_ID).forEach(n => n.remove());
   overlayEl = null;
   textEl = null;
@@ -165,108 +162,123 @@ function subtitleDurationMs() {
   return Math.max(MIN_SUBTITLE_DURATION_MS, Math.min(MAX_SUBTITLE_DURATION_MS, raw));
 }
 
-function clearPendingSubtitle() {
-  if (showTimer) {
-    clearTimeout(showTimer);
-    showTimer = null;
-  }
-  pendingSubtitle = null;
+function startRenderLoop() {
+  if (renderLoopId) return;
+  renderLoopId = requestAnimationFrame(renderLoop);
 }
 
-function schedulePendingSubtitle() {
-  if (showTimer) {
-    clearTimeout(showTimer);
-    showTimer = null;
+function stopRenderLoop() {
+  if (renderLoopId) {
+    cancelAnimationFrame(renderLoopId);
+    renderLoopId = null;
   }
-  if (!pendingSubtitle) return;
-
-  const offsetMs = Number.isFinite(Number(pendingSubtitle.offsetMs))
-    ? Number(pendingSubtitle.offsetMs)
-    : subtitleOffsetMs();
-  const displayAtMs = pendingSubtitle.receivedAtMs + offsetMs;
-  const waitMs = Math.max(0, displayAtMs - Date.now());
-  if (waitMs <= 0) {
-    const next = pendingSubtitle;
-    pendingSubtitle = null;
-    showSubtitleNow(next.text);
-    return;
-  }
-
-  showTimer = setTimeout(() => {
-    showTimer = null;
-    const next = pendingSubtitle;
-    pendingSubtitle = null;
-    if (next) showSubtitleNow(next.text);
-  }, waitMs);
 }
 
-function setText(text) {
-  const t = (text || '').trim();
-  if (!t) {
-    clearPendingSubtitle();
-    hideSubtitleNow();
-    return;
-  }
-
-  pendingSubtitle = {
-    text,
-    receivedAtMs: Date.now(),
-    offsetMs: subtitleOffsetMs()
-  };
-  schedulePendingSubtitle();
+function renderLoop() {
+  updateSubtitles();
+  renderLoopId = requestAnimationFrame(renderLoop);
 }
 
-function hideSubtitleNow() {
-  if (hideTimer) {
-    clearTimeout(hideTimer);
-    hideTimer = null;
-  }
+function updateSubtitles() {
   if (!overlayEl || !textEl) return;
-  overlayEl.classList.remove('kami-visible');
-  textEl.textContent = '';
-}
 
-function scheduleHideSubtitle() {
-  if (hideTimer) clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => {
-    hideSubtitleNow();
-  }, subtitleDurationMs());
-}
+  const now = Date.now();
+  const offsetMs = subtitleOffsetMs();
+  const minVisibleMs = MIN_SUBTITLE_DURATION_MS;
 
-function showSubtitleNow(text) {
-  if (!overlayEl) ensureOverlay({});
-  let t = (text || '').trim();
-  if (!t) {
-    // Empty transcript — hide instead of showing a blank black box.
-    hideSubtitleNow();
-    return;
+  // 1. Process Queue: promote pending to active if it's time to show.
+  // We consume all items in the queue that have already passed their showAt time,
+  // leaving only the most recent one as activeSubtitle.
+  while (subtitleQueue.length > 0) {
+    const next = subtitleQueue[0];
+    const showAt = next.segmentStartTs + offsetMs;
+    if (now >= showAt) {
+      activeSubtitle = subtitleQueue.shift();
+    } else {
+      break;
+    }
   }
-  if (t.length > MAX_VISIBLE_CHARS) t = '…' + t.slice(-MAX_VISIBLE_CHARS);
-  textEl.textContent = t;
-  overlayEl.classList.add('kami-visible');
-  positionOverlayOverVideo();
-  // Keep visible until the next chunk arrives, instead of fading after 6s —
-  scheduleHideSubtitle();
+
+  // 2. Decide if active should be visible
+  if (activeSubtitle) {
+    const showAt = activeSubtitle.segmentStartTs + offsetMs;
+    let hideAt = activeSubtitle.segmentEndTs + offsetMs;
+    // Fallback: ensure minimum duration
+    hideAt = Math.max(hideAt, showAt + minVisibleMs);
+
+    if (now >= showAt && now < hideAt) {
+      // Within visible window
+      let t = (activeSubtitle.text || '').trim();
+      if (t.length > MAX_VISIBLE_CHARS) t = '…' + t.slice(-MAX_VISIBLE_CHARS);
+
+      if (textEl.textContent !== t) {
+        textEl.textContent = t;
+      }
+      if (!overlayEl.classList.contains('kami-visible')) {
+        overlayEl.classList.add('kami-visible');
+        positionOverlayOverVideo();
+      }
+    } else {
+      // Outside visible window (either expired or pushed into future by offset)
+      if (overlayEl.classList.contains('kami-visible')) {
+        overlayEl.classList.remove('kami-visible');
+        textEl.textContent = '';
+      }
+
+      if (now >= hideAt) {
+        activeSubtitle = null;
+      }
+    }
+  } else {
+    // No active subtitle
+    if (overlayEl.classList.contains('kami-visible')) {
+      overlayEl.classList.remove('kami-visible');
+      textEl.textContent = '';
+    }
+  }
 }
 
 function setTranscriptText(msg) {
-  const text = msg.text || '';
-  const t = text.trim();
-  if (!t) {
-    // Backend silence/idle clears should not shorten the current subtitle.
-    // Visible lifetime is controlled only by the hide timer.
-    return;
+  const text = (msg.text || '').trim();
+  if (msg.sync) currentSyncMetrics = msg.sync;
+
+  if (!text) return;
+
+  const receivedAtMs = Number(msg.receivedAtMs) || Date.now();
+
+  // Use segment timestamps if available, otherwise derive from receivedAtMs
+  let segmentStartTs = msg.segmentStartTs ? msg.segmentStartTs * 1000 : receivedAtMs;
+  let segmentEndTs = msg.segmentEndTs ? msg.segmentEndTs * 1000 : segmentStartTs + subtitleDurationMs();
+
+  const item = {
+    text,
+    segmentStartTs,
+    segmentEndTs,
+    receivedAtMs
+  };
+
+  // If this is an update to the current active subtitle or the latest queued one, replace it.
+  // We use a 200ms threshold to identify "same" segments from potentially slightly varied timestamps.
+  let replaced = false;
+  if (activeSubtitle && Math.abs(activeSubtitle.segmentStartTs - segmentStartTs) < 200) {
+    activeSubtitle = item;
+    replaced = true;
+  } else if (subtitleQueue.length > 0) {
+    const last = subtitleQueue[subtitleQueue.length - 1];
+    if (Math.abs(last.segmentStartTs - segmentStartTs) < 200) {
+      subtitleQueue[subtitleQueue.length - 1] = item;
+      replaced = true;
+    }
   }
 
-  const receivedAtMs = Number(msg.receivedAtMs);
-  if (msg.sync) currentSyncMetrics = msg.sync;
-  const effectiveOffsetMs = Number(msg.effectiveOffsetMs);
-  pendingSubtitle = {
-    text,
-    receivedAtMs: Number.isFinite(receivedAtMs) ? receivedAtMs : Date.now(),
-    offsetMs: Number.isFinite(effectiveOffsetMs) ? effectiveOffsetMs : subtitleOffsetMs()
-  };
-  schedulePendingSubtitle();
+  if (!replaced) {
+    subtitleQueue.push(item);
+    // Sort to ensure timeline order even if backend sends chunks slightly out of order
+    subtitleQueue.sort((a, b) => a.segmentStartTs - b.segmentStartTs);
+  }
+
+  // Keep queue small
+  if (subtitleQueue.length > 5) subtitleQueue.shift();
 }
 
 function showError(msg) {
@@ -289,11 +301,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'overlay:update':  applySettings(msg.settings || {}, msg.sync); positionOverlayOverVideo(); break;
     case 'overlay:unmount': unmount(); break;
     case 'overlay:text':
-      if (Number.isFinite(Number(msg.receivedAtMs))) setTranscriptText(msg);
-      else {
-        clearPendingSubtitle();
-        showSubtitleNow(msg.text);
-      }
+      setTranscriptText(msg);
       break;
     case 'overlay:error':   showError(msg.message); break;
   }

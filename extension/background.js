@@ -720,6 +720,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 isFinal: msg.isFinal,
                 mode: msg.mode,
                 receivedAtMs,
+                segmentStartTs: msg.segmentStartTs,
+                segmentEndTs: msg.segmentEndTs,
                 sync: nextSyncMetrics,
                 effectiveOffsetMs: Math.round(nextSyncMetrics.effectiveOffsetS * 1000)
               });
