@@ -320,8 +320,10 @@ button.stop .spinner {
 .settings select,
 .settings input[type="text"],
 .settings input[type="password"],
+.settings input[type="number"],
 .advanced input[type="text"],
-.advanced input[type="password"] {
+.advanced input[type="password"],
+.advanced input[type="number"] {
   min-height: 32px;
   width: 100%;
   padding: 7px 8px;
@@ -334,8 +336,8 @@ button.stop .spinner {
 
 .settings select:disabled,
 .settings input:disabled,
-.inline-reset:disabled,
 .advanced input:disabled,
+.inline-reset:disabled,
 .api-key-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -360,6 +362,16 @@ button.stop .spinner {
 
 .advanced label {
   margin-top: 9px;
+}
+
+.advanced .checkbox-setting {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.advanced .checkbox-setting input {
+  width: auto;
 }
 
 .api-key-settings {

@@ -139,6 +139,7 @@
             Transcription
             <select id="transcriber">
               <option value="openai-realtime" selected>Realtime Cloud (OpenAI)</option>
+              <option value="openai-chunked">OpenAI Chunked</option>
               <option value="local">Local Whisper</option>
             </select>
           </label>
@@ -177,6 +178,32 @@
             <option value="balanced" selected>Balanced</option>
             <option value="stable">Stable</option>
           </select>
+          <span class="field-help">Fast shows captions sooner. Stable waits longer for cleaner phrase breaks.</span>
+        </label>
+        <label>
+          Audio chunk window (ms)
+          <input type="number" id="chunkDurationMs" min="250" max="5000" step="50" value="650" />
+          <span class="field-help">Lower sends audio sooner. Higher gives the transcriber more context but adds delay.</span>
+        </label>
+        <label>
+          Max audio buffer (ms)
+          <input type="number" id="maxBufferMs" min="250" max="10000" step="50" value="900" />
+          <span class="field-help">Lower limits waiting before send. Higher can smooth audio bursts but may feel late.</span>
+        </label>
+        <label>
+          VAD silence wait (ms)
+          <input type="number" id="vadSilenceMs" min="150" max="2000" step="50" value="350" />
+          <span class="field-help">Lower ends speech segments faster. Higher waits for longer silence before finalizing.</span>
+        </label>
+        <label class="checkbox-setting">
+          <input type="checkbox" id="partialEmitEnabled" checked />
+          <span>Emit stable partial subtitles sooner</span>
+        </label>
+        <span class="field-help">On starts translation from stable partial phrases. Off waits for more finalized text.</span>
+        <label>
+          Translation flush wait (ms)
+          <input type="number" id="translationFlushMs" min="150" max="3000" step="50" value="450" />
+          <span class="field-help">Lower translates shorter fragments sooner. Higher can improve wording but adds delay.</span>
         </label>
         <div class="api-key-settings">
           <label>

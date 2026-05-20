@@ -259,6 +259,11 @@ class BackendManager:
             ("KAMI_TRANSCRIBER", "transcriber"),
             ("KAMI_HOST", "host"),
             ("KAMI_PORT", "port"),
+            ("SUBSTREAM_CHUNK_DURATION_MS", "chunkDurationMs"),
+            ("SUBSTREAM_MAX_BUFFER_MS", "maxBufferMs"),
+            ("SUBSTREAM_VAD_SILENCE_MS", "vadSilenceMs"),
+            ("SUBSTREAM_PARTIAL_EMIT_ENABLED", "partialEmitEnabled"),
+            ("SUBSTREAM_TRANSLATION_FLUSH_MS", "translationFlushMs"),
         ):
             v = cfg.get(k_cfg)
             if k_cfg == "transcriber" and normalize_config_value(v) == "openai":

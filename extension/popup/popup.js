@@ -32,6 +32,11 @@ const els = {
   transcriber: $('transcriber'),
   backendUrl: $('backendUrl'),
   realtimeLatency: $('realtimeLatency'),
+  chunkDurationMs: $('chunkDurationMs'),
+  maxBufferMs: $('maxBufferMs'),
+  vadSilenceMs: $('vadSilenceMs'),
+  partialEmitEnabled: $('partialEmitEnabled'),
+  translationFlushMs: $('translationFlushMs'),
   model: $('model'),
   device: $('device'),
   apiKey: $('apiKey'),
@@ -42,7 +47,7 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 9,
+  settingsVersion: 12,
   sourceLang: 'auto',
   targetLang: 'en',
   fontSize: 28,
@@ -53,14 +58,51 @@ const DEFAULTS = {
   transcriber: 'openai-realtime',
   backendUrl: 'ws://127.0.0.1:8765/ws',
   realtimeLatency: 'balanced',
+  chunkDurationMs: 650,
+  maxBufferMs: 900,
+  vadSilenceMs: 350,
+  partialEmitEnabled: true,
+  translationFlushMs: 450,
   task: 'translate',
   model: 'base',
   device: 'cpu',
 };
 
-const LIVE_SETTINGS = new Set(['sourceLang', 'targetLang', 'fontSize', 'position', 'subtitleDelayMs', 'subtitleDurationMs', 'syncMode', 'realtimeLatency']);
-const RESTART_SETTINGS = new Set(['transcriber', 'backendUrl', 'model', 'device']);
-const SETTING_FIELDS = ['sourceLang', 'targetLang', 'fontSize', 'position', 'subtitleDelay', 'subtitleDuration', 'syncMode', 'transcriber', 'backendUrl', 'realtimeLatency', 'model', 'device'];
+const LIVE_SETTINGS = new Set([
+  'sourceLang',
+  'targetLang',
+  'fontSize',
+  'position',
+  'subtitleDelayMs',
+  'subtitleDurationMs',
+  'syncMode',
+  'realtimeLatency',
+  'chunkDurationMs',
+  'maxBufferMs',
+  'vadSilenceMs',
+  'partialEmitEnabled',
+  'translationFlushMs',
+]);
+const RESTART_SETTINGS = new Set(['model', 'device']);
+const SETTING_FIELDS = [
+  'sourceLang',
+  'targetLang',
+  'fontSize',
+  'position',
+  'subtitleDelay',
+  'subtitleDuration',
+  'syncMode',
+  'transcriber',
+  'backendUrl',
+  'realtimeLatency',
+  'chunkDurationMs',
+  'maxBufferMs',
+  'vadSilenceMs',
+  'partialEmitEnabled',
+  'translationFlushMs',
+  'model',
+  'device',
+];
 const MIN_SUBTITLE_OFFSET_MS = -10000;
 const MAX_SUBTITLE_OFFSET_MS = 10000;
 const MIN_SUBTITLE_DURATION_MS = 1200;
@@ -73,6 +115,10 @@ let toastTimer = null;
 let saveDebounceTimer = null;
 
 function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'; }
+
+function translatorForTranscriber(transcriber) {
+  return transcriber === 'local' ? 'local' : 'openai';
+}
 
 function errorMessage(err, fallback = 'Something went wrong.') {
   if (!err) return fallback;
@@ -115,6 +161,12 @@ function clampSubtitleDurationMs(ms) {
   const value = parseInt(ms, 10);
   if (!Number.isFinite(value)) return DEFAULTS.subtitleDurationMs;
   return Math.max(MIN_SUBTITLE_DURATION_MS, Math.min(MAX_SUBTITLE_DURATION_MS, value));
+}
+
+function clampMs(ms, min, max, fallback) {
+  const value = parseInt(ms, 10);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
 }
 
 function formatSubtitleDuration(ms) {
@@ -189,6 +241,7 @@ async function loadSettings() {
   if (s.transcriber === 'openai') {
     s.transcriber = 'local';
   }
+  s.translator = translatorForTranscriber(s.transcriber);
   if (!['fast', 'balanced', 'stable'].includes(s.realtimeLatency)) {
     s.realtimeLatency = DEFAULTS.realtimeLatency;
   }
@@ -203,6 +256,11 @@ async function loadSettings() {
   if (!['manual', 'auto'].includes(s.syncMode)) {
     s.syncMode = DEFAULTS.syncMode;
   }
+  s.chunkDurationMs = clampMs(s.chunkDurationMs, 250, 5000, DEFAULTS.chunkDurationMs);
+  s.maxBufferMs = clampMs(s.maxBufferMs, 250, 10000, DEFAULTS.maxBufferMs);
+  s.vadSilenceMs = clampMs(s.vadSilenceMs, 150, 2000, DEFAULTS.vadSilenceMs);
+  s.partialEmitEnabled = !!s.partialEmitEnabled;
+  s.translationFlushMs = clampMs(s.translationFlushMs, 150, 3000, DEFAULTS.translationFlushMs);
   s.settingsVersion = DEFAULTS.settingsVersion;
   els.sourceLang.value = s.sourceLang;
   els.targetLang.value = s.targetLang;
@@ -217,6 +275,11 @@ async function loadSettings() {
   els.transcriber.value = s.transcriber;
   els.backendUrl.value = s.backendUrl;
   els.realtimeLatency.value = s.realtimeLatency;
+  els.chunkDurationMs.value = s.chunkDurationMs;
+  els.maxBufferMs.value = s.maxBufferMs;
+  els.vadSilenceMs.value = s.vadSilenceMs;
+  els.partialEmitEnabled.checked = s.partialEmitEnabled;
+  els.translationFlushMs.value = s.translationFlushMs;
   els.model.value = s.model;
   els.device.value = s.device;
   currentSettings = s;
@@ -235,8 +298,14 @@ function readSettingsFromForm() {
     subtitleDurationMs: clampSubtitleDurationMs(els.subtitleDuration.value),
     syncMode: els.syncMode.value === 'manual' ? 'manual' : 'auto',
     transcriber: els.transcriber.value,
+    translator: translatorForTranscriber(els.transcriber.value),
     backendUrl: els.backendUrl.value.trim() || DEFAULTS.backendUrl,
     realtimeLatency: els.realtimeLatency.value,
+    chunkDurationMs: clampMs(els.chunkDurationMs.value, 250, 5000, DEFAULTS.chunkDurationMs),
+    maxBufferMs: clampMs(els.maxBufferMs.value, 250, 10000, DEFAULTS.maxBufferMs),
+    vadSilenceMs: clampMs(els.vadSilenceMs.value, 150, 2000, DEFAULTS.vadSilenceMs),
+    partialEmitEnabled: els.partialEmitEnabled.checked,
+    translationFlushMs: clampMs(els.translationFlushMs.value, 150, 3000, DEFAULTS.translationFlushMs),
     task: 'translate',
     model: els.model.value,
     device,
@@ -315,7 +384,12 @@ function renderModeStatus(res = {}) {
       ? setModeStatus('Realtime Cloud ready', 'ready')
       : setModeStatus('API key required', 'warn');
   }
-  return setModeStatus(apiKeyInfo.configured ? 'Using Local Whisper fallback' : 'Using Local Whisper fallback', 'warn');
+  if (currentSettings.transcriber === 'openai-chunked') {
+    return apiKeyInfo.configured
+      ? setModeStatus('OpenAI Chunked ready', 'ready')
+      : setModeStatus('API key required', 'warn');
+  }
+  return setModeStatus('Local Whisper, no API key', 'ready');
 }
 
 function shortBackendError(info) {
@@ -428,7 +502,7 @@ async function refreshApiKeyStatus() {
       masked: data.masked || null,
     };
     els.apiKeyStatus.textContent = apiKeySourceText(apiKeyInfo);
-    if (loadedSettingsVersion < DEFAULTS.settingsVersion && currentSettings) {
+    if (loadedSettingsVersion > 0 && loadedSettingsVersion < 9 && currentSettings) {
       const nextTranscriber = apiKeyInfo.configured ? 'openai-realtime' : 'local';
       if (currentSettings.transcriber !== nextTranscriber) {
         els.transcriber.value = nextTranscriber;
@@ -527,7 +601,7 @@ async function clearApiKey() {
 setInterval(refresh, 1000);
 
 async function onToggle() {
-  if (els.transcriber.value === 'openai-realtime' && !apiKeyInfo.configured) {
+  if (['openai-realtime', 'openai-chunked'].includes(els.transcriber.value) && !apiKeyInfo.configured) {
     els.transcriber.value = 'local';
     showToast('Using Local Whisper fallback', 'error');
   }
@@ -591,12 +665,26 @@ els.position.addEventListener('change', () => {
 els.realtimeLatency.addEventListener('change', () => {
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
+['chunkDurationMs', 'maxBufferMs', 'vadSilenceMs', 'translationFlushMs'].forEach((key) => {
+  els[key].addEventListener('change', () => {
+    saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+  });
+});
+els.partialEmitEnabled.addEventListener('change', () => {
+  saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+});
 ['sourceLang', 'targetLang'].forEach((key) => {
   els[key].addEventListener('change', () => {
     saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
   });
 });
-['transcriber', 'backendUrl', 'model', 'device'].forEach((key) => {
+['transcriber', 'backendUrl'].forEach((key) => {
+  els[key].addEventListener('change', () => {
+    showToast('Applying new settings...');
+    debounceSettingsApply(false);
+  });
+});
+['model', 'device'].forEach((key) => {
   els[key].addEventListener('change', () => {
     showToast('Applying new settings...');
     debounceSettingsApply(true);

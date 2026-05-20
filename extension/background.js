@@ -12,6 +12,7 @@ const SYNC_MODE_MANUAL = 'manual';
 const SYNC_MODE_AUTO_LOCAL_WHISPER = 'auto_local_whisper';
 const LOCAL_WHISPER_ENGINE = 'local-whisper';
 const REALTIME_TRANSCRIBER = 'openai-realtime';
+const OPENAI_CHUNKED_TRANSCRIBER = 'openai-chunked';
 const MIN_AUTO_STEP_CHANGE_MS = 200;
 const MIN_CALIBRATION_SAMPLES = 8;
 const MIN_CALIBRATION_SAVE_CHANGE_S = 0.1;
@@ -91,7 +92,11 @@ function timelineAutoSyncEnabled(settings) {
   return !!(
     settings &&
     syncMode(settings) === SYNC_MODE_AUTO &&
-    (settings.transcriber === 'local' || settings.transcriber === REALTIME_TRANSCRIBER)
+    (
+      settings.transcriber === 'local' ||
+      settings.transcriber === REALTIME_TRANSCRIBER ||
+      settings.transcriber === OPENAI_CHUNKED_TRANSCRIBER
+    )
   );
 }
 
@@ -105,6 +110,10 @@ function localCalibrationEnabled(settings) {
 
 function engineForSettings(settings) {
   return settings && settings.transcriber === 'local' ? LOCAL_WHISPER_ENGINE : settings && settings.transcriber;
+}
+
+function translatorForSettings(settings) {
+  return settings && settings.transcriber === 'local' ? 'local' : 'openai';
 }
 
 function calibrationKey(settings) {
@@ -453,8 +462,13 @@ async function ensureBackend(settings) {
     model:      settings.model      || undefined,
     device:     settings.device     || undefined,
     compute:    settings.compute    || undefined,
-    translator: settings.translator || undefined,
+    translator: translatorForSettings(settings),
     transcriber: settings.transcriber || undefined,
+    chunkDurationMs: settings.chunkDurationMs || undefined,
+    maxBufferMs: settings.maxBufferMs || undefined,
+    vadSilenceMs: settings.vadSilenceMs || undefined,
+    partialEmitEnabled: typeof settings.partialEmitEnabled === 'boolean' ? settings.partialEmitEnabled : undefined,
+    translationFlushMs: settings.translationFlushMs || undefined,
   };
   backendState = 'starting';
   try {

@@ -74,9 +74,10 @@ function ensureOverlay(settings) {
   document.querySelectorAll('#' + OVERLAY_ID).forEach(n => n.remove());
   overlayEl = document.createElement('div');
   overlayEl.id = OVERLAY_ID;
-  overlayEl.setAttribute('dir', 'rtl');
+  overlayEl.setAttribute('dir', 'auto');
   textEl = document.createElement('span');
   textEl.className = 'kami-subs-text';
+  textEl.setAttribute('dir', 'auto');
   overlayEl.appendChild(textEl);
   currentOverlayHost().appendChild(overlayEl);
   applySettings(settings || {});
@@ -100,6 +101,24 @@ function applySettings(settings, sync) {
   overlayEl.style.setProperty('--kami-font-size', fontSize + 'px');
   const position = settings.position || 'bottom';
   overlayEl.dataset.position = position;
+}
+
+function subtitleDirection(text) {
+  return /[\u0590-\u08ff]/.test(text || '') ? 'rtl' : 'ltr';
+}
+
+function normalizeSubtitleText(text) {
+  const cleaned = (text || '').trim();
+  if (!cleaned) return '';
+  const match = cleaned.match(/^([.!?。！？؟]+)\s*(\S.*)$/);
+  if (!match) return cleaned;
+
+  const leading = match[1];
+  const rest = match[2].trim();
+  const first = Array.from(rest)[0] || '';
+  if (!/[\p{L}\p{N}]/u.test(first) && !`"'([`.includes(first)) return cleaned;
+  if (/[.!?。！？؟]$/.test(rest)) return rest;
+  return rest + leading[leading.length - 1];
 }
 
 function positionOverlayOverVideo() {
@@ -433,11 +452,14 @@ function updateSubtitles() {
 
     if (canShow && now < hideAt) {
       // Within visible window
-      let t = (activeSubtitle.text || '').trim();
+      let t = normalizeSubtitleText(activeSubtitle.text);
       if (t.length > MAX_VISIBLE_CHARS) t = '…' + t.slice(-MAX_VISIBLE_CHARS);
 
       if (textEl.textContent !== t) {
         textEl.textContent = t;
+        const dir = subtitleDirection(t);
+        textEl.setAttribute('dir', dir);
+        overlayEl.setAttribute('dir', dir);
       }
       showNativeSubtitle(t);
       if (!overlayEl.classList.contains('kami-visible')) {

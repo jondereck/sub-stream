@@ -16,10 +16,15 @@ let reconnectTimer = null;
 let reconnectingForConfig = false;
 const MAX_RECONNECT_DELAY_MS = 5000;
 
-// Realtime Cloud sends tiny 24kHz frames. Local Whisper adapts chunk size by model.
+// Realtime Cloud sends tiny 24kHz frames. Chunked engines use shorter windows
+// than classic subtitle batching so transcription starts sooner.
 const LOCAL_SAMPLE_RATE = 16000;
 const REALTIME_SAMPLE_RATE = 24000;
-const REALTIME_FRAME_SECONDS = 0.05;
+const REALTIME_FRAME_SECONDS = 0.04;
+const DEFAULT_CHUNK_DURATION_MS = 650;
+const DEFAULT_MAX_BUFFER_MS = 900;
+const DEFAULT_VAD_SILENCE_MS = 350;
+const DEFAULT_TRANSLATION_FLUSH_MS = 450;
 const ACTIVE_AUDIO_RMS = 0.005;
 let chunkBuffer = new Float32Array(0);
 let chunkBufferStartTs = null;
@@ -71,8 +76,16 @@ function currentTranscriber() {
   return (settings && settings.transcriber) || 'local';
 }
 
+function currentTranslator() {
+  return currentTranscriber() === 'local' ? 'local' : 'openai';
+}
+
 function isRealtimeMode() {
   return currentTranscriber() === 'openai-realtime';
+}
+
+function isOpenAiChunkedMode() {
+  return currentTranscriber() === 'openai-chunked';
 }
 
 function targetSampleRate() {
@@ -80,14 +93,30 @@ function targetSampleRate() {
 }
 
 function localChunkSeconds() {
+  const configuredMs = clampLatencyMs(settings && settings.chunkDurationMs, 250, 5000, DEFAULT_CHUNK_DURATION_MS);
+  if (isOpenAiChunkedMode()) return Math.min(configuredMs, 900) / 1000;
   const model = ((settings && settings.model) || 'base').toLowerCase();
-  if (model === 'tiny' || model === 'base') return 0.8;
-  if (model === 'small') return 1.0;
-  return 1.5;
+  const modelDefaultMs = model === 'tiny' || model === 'base' ? 650 : model === 'small' ? 850 : 1200;
+  return Math.min(configuredMs, modelDefaultMs) / 1000;
+}
+
+function clampLatencyMs(value, min, max, fallback) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function partialEmitEnabled() {
+  return settings && Object.prototype.hasOwnProperty.call(settings, 'partialEmitEnabled')
+    ? !!settings.partialEmitEnabled
+    : true;
 }
 
 function targetFrameSamples() {
-  const seconds = isRealtimeMode() ? REALTIME_FRAME_SECONDS : localChunkSeconds();
+  const maxBufferMs = clampLatencyMs(settings && settings.maxBufferMs, 250, 10000, DEFAULT_MAX_BUFFER_MS);
+  const seconds = isRealtimeMode()
+    ? Math.min(REALTIME_FRAME_SECONDS, maxBufferMs / 1000)
+    : Math.min(localChunkSeconds(), maxBufferMs / 1000);
   return Math.round(targetSampleRate() * seconds);
 }
 
@@ -99,9 +128,15 @@ function buildConfigMessage() {
     targetLang: (settings && settings.targetLang) || 'ar',
     realtimeLatency: (settings && settings.realtimeLatency) || 'balanced',
     task: (settings && settings.task) || 'translate',
+    translator: currentTranslator(),
     transcriber: currentTranscriber(),
     model: (settings && settings.model) || 'base',
-    device: (settings && settings.device) || 'cpu'
+    device: (settings && settings.device) || 'cpu',
+    chunkDurationMs: clampLatencyMs(settings && settings.chunkDurationMs, 250, 5000, DEFAULT_CHUNK_DURATION_MS),
+    maxBufferMs: clampLatencyMs(settings && settings.maxBufferMs, 250, 10000, DEFAULT_MAX_BUFFER_MS),
+    vadSilenceMs: clampLatencyMs(settings && settings.vadSilenceMs, 150, 2000, DEFAULT_VAD_SILENCE_MS),
+    partialEmitEnabled: partialEmitEnabled(),
+    translationFlushMs: clampLatencyMs(settings && settings.translationFlushMs, 150, 3000, DEFAULT_TRANSLATION_FLUSH_MS)
   };
 }
 
@@ -260,6 +295,14 @@ function sendChunkIfReady() {
     const pcm16 = float32ToInt16(chunk);
     if (ws && ws.readyState === WebSocket.OPEN) {
       const chunkId = ++chunkSeq;
+      const createdAtMs = Date.now();
+      console.debug('[sub-stream-ai offscreen] chunk created', {
+        chunkId,
+        capturedAt,
+        durationMs: Math.round((frameSamples / sampleRate) * 1000),
+        bufferedSamples: chunkBuffer.length,
+        transcriber: currentTranscriber()
+      });
       ws.send(JSON.stringify({
         type: 'chunk',
         chunkId,
@@ -268,6 +311,11 @@ function sendChunkIfReady() {
         sampleRate
       }));
       ws.send(pcm16.buffer);
+      console.debug('[sub-stream-ai offscreen] chunk sent', {
+        chunkId,
+        sentAt: createdAtMs / 1000,
+        sendDelayMs: Math.max(0, createdAtMs - Math.round(capturedAt * 1000))
+      });
       if (isRealtimeMode() && rms >= ACTIVE_AUDIO_RMS) {
         trackActiveUsage((pcm16.length / targetSampleRate()) * 1000);
       }

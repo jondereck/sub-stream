@@ -115,6 +115,8 @@ from config import (
     MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR, TRANSCRIBER,
     HOST, PORT, SAMPLE_RATE, REALTIME_SAMPLE_RATE, VAD_FILTER,
     MAX_CHUNK_LAG_S, MOBILE_TOKEN, OPENAI_TRANSLATION_MODEL,
+    OPENAI_TRANSCRIBE_MODEL, CHUNK_DURATION_MS, MAX_BUFFER_MS,
+    VAD_SILENCE_MS, PARTIAL_EMIT_ENABLED, TRANSLATION_FLUSH_MS,
 )
 
 log = logging.getLogger("sub-stream-ai")
@@ -129,17 +131,20 @@ OPENAI_REALTIME_TRANSCRIBE_MODEL = os.getenv("OPENAI_REALTIME_TRANSCRIBE_MODEL",
 OPENAI_REALTIME_TRANSCRIBE_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 OPENAI_REALTIME_CONNECT_TIMEOUT_S = float(os.getenv("OPENAI_REALTIME_CONNECT_TIMEOUT_S", "15"))
 REALTIME_TRANSCRIBER = "openai-realtime"
+OPENAI_CHUNKED_TRANSCRIBER = "openai-chunked"
 REALTIME_PHRASE_CHARS = 72
 REALTIME_PHRASE_IDLE_S = 0.75
 REALTIME_MIN_SEGMENT_S = 0.45
 REALTIME_MAX_SEGMENT_S = 4.0
 REALTIME_TEXT_SECONDS_PER_CHAR = 1 / 16
 REALTIME_LATENCY_PROFILES = {
-    "fast": {"phrase_chars": 56, "idle_s": 1.0},
-    "balanced": {"phrase_chars": 72, "idle_s": 1.6},
-    "stable": {"phrase_chars": 92, "idle_s": 2.3},
+    "fast": {"phrase_chars": 44, "idle_s": 0.45},
+    "balanced": {"phrase_chars": 60, "idle_s": 0.75},
+    "accurate": {"phrase_chars": 92, "idle_s": 1.2},
 }
-ALLOWED_TRANSCRIBERS = {"local", REALTIME_TRANSCRIBER}
+REALTIME_LATENCY_ALIASES = {"stable": "accurate"}
+ALLOWED_TRANSCRIBERS = {"local", REALTIME_TRANSCRIBER, OPENAI_CHUNKED_TRANSCRIBER}
+ALLOWED_TRANSLATORS = {"openai", "gpt", "google", "local", "none"}
 ALLOWED_TARGET_LANGS = {
     "ar", "en", "es", "fr", "de", "tr", "ja", "ko", "zh", "hi",
     "it", "pt", "ru", "id", "ms", "th", "vi", "fil",
@@ -903,6 +908,26 @@ def _collapse_repeated_tokens(text: str) -> str:
     return " ".join(output)
 
 
+def _fix_leading_sentence_punctuation(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+
+    match = re.match(r"^([.!?。！？؟]+)\s*(\S.*)$", cleaned)
+    if not match:
+        return cleaned
+
+    leading, rest = match.groups()
+    if not re.match(r"^[\w\"'(\[]", rest, flags=re.UNICODE):
+        return cleaned
+
+    terminal = leading[-1]
+    rest = rest.strip()
+    if re.search(r"[.!?。！？؟]$", rest):
+        return rest
+    return f"{rest}{terminal}"
+
+
 def cleanup_transcript_text(text: str) -> str:
     cleaned = (text or "").replace("\ufeff", " ").replace("\u200b", " ")
     cleaned = cleaned.replace("\r", " ").replace("\n", " ")
@@ -916,7 +941,7 @@ def cleanup_transcript_text(text: str) -> str:
     cleaned = re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
     cleaned = re.sub(r"([¿¡])\s+", r"\1", cleaned)
     cleaned = _strip_edge_fillers(cleaned)
-    cleaned = _collapse_repeated_tokens(cleaned)
+    cleaned = _fix_leading_sentence_punctuation(_collapse_repeated_tokens(cleaned))
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -938,13 +963,19 @@ def transcript_has_boundary(text: str) -> bool:
     return bool(re.search(r"[.!?。！？؟]\s*$", text or ""))
 
 
-def transcript_needs_more_context(text: str, *, had_pending: bool, pending_age_s: float) -> bool:
+def transcript_needs_more_context(
+    text: str,
+    *,
+    had_pending: bool,
+    pending_age_s: float,
+    max_pending_s: float = 1.2,
+) -> bool:
     cleaned = cleanup_transcript_text(text)
     if not cleaned:
         return False
     if transcript_has_boundary(cleaned):
         return False
-    if had_pending and pending_age_s >= 1.2:
+    if had_pending and pending_age_s >= max_pending_s:
         return False
 
     words = _transcript_words(cleaned)
@@ -966,7 +997,13 @@ class TranscriptStabilityBuffer:
         self.pending_text = ""
         self.pending_since = None
 
-    def prepare(self, text: str, *, force: bool = False) -> PreparedTranscript:
+    def prepare(
+        self,
+        text: str,
+        *,
+        force: bool = False,
+        max_pending_s: float = 1.2,
+    ) -> PreparedTranscript:
         cleaned = cleanup_transcript_text(text)
         if not cleaned:
             self.reset()
@@ -987,6 +1024,7 @@ class TranscriptStabilityBuffer:
             candidate,
             had_pending=had_pending,
             pending_age_s=pending_age_s,
+            max_pending_s=max_pending_s,
         ):
             self.pending_text = candidate
             if self.pending_since is None:
@@ -1030,14 +1068,17 @@ def translate_with_openai(text: str, src: str, tgt: str) -> str:
     return cleanup_transcript_text(translated) or cleanup_transcript_text(text)
 
 
-def translate(text: str, src: str, tgt: str) -> str:
+def translate(text: str, src: str, tgt: str, translator: Optional[str] = None) -> str:
     text = cleanup_transcript_text(text)
     if not text or src == tgt:
         return text
-    if TRANSLATOR == "none":
+    selected = (translator or TRANSLATOR or "openai").strip().lower()
+    if selected not in ALLOWED_TRANSLATORS:
+        selected = "openai"
+    if selected in ("local", "none"):
         return text
 
-    if TRANSLATOR in ("openai", "gpt"):
+    if selected in ("openai", "gpt"):
         try:
             return translate_with_openai(text, src, tgt)
         except Exception as e:
@@ -1049,7 +1090,7 @@ def translate(text: str, src: str, tgt: str) -> str:
                 e,
             )
 
-    if TRANSLATOR in ("openai", "gpt", "google"):
+    if selected in ("openai", "gpt", "google"):
         try:
             return translate_with_google(text, src, tgt)
         except Exception as e:
@@ -1178,6 +1219,12 @@ class Session:
     realtime_latency: str = "balanced"
     task: str = "transcribe"
     transcriber: str = TRANSCRIBER if TRANSCRIBER in ALLOWED_TRANSCRIBERS else "local"
+    translator: str = TRANSLATOR if TRANSLATOR in ALLOWED_TRANSLATORS else "openai"
+    chunk_duration_ms: int = CHUNK_DURATION_MS
+    max_buffer_ms: int = MAX_BUFFER_MS
+    vad_silence_ms: int = VAD_SILENCE_MS
+    partial_emit_enabled: bool = PARTIAL_EMIT_ENABLED
+    translation_flush_ms: int = TRANSLATION_FLUSH_MS
     chunk_id: int = 0
     next_chunk_id: Optional[int] = None
     next_chunk_captured_at: Optional[float] = None
@@ -1347,12 +1394,19 @@ def caption_id_for(session: Session, prefix: str, chunk_id: int) -> str:
 
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
     """Returns (raw_text, detected_lang, start, end)."""
+    if session.transcriber == OPENAI_CHUNKED_TRANSCRIBER:
+        return transcribe_chunk_openai(session, pcm_int16)
     return transcribe_chunk_local(session, pcm_int16)
 
 
 def safe_transcriber(value: Optional[str]) -> str:
     transcriber = (value or TRANSCRIBER or "local").strip().lower()
     return transcriber if transcriber in ALLOWED_TRANSCRIBERS else "local"
+
+
+def safe_translator(value: Optional[str]) -> str:
+    translator = (value or TRANSLATOR or "openai").strip().lower()
+    return translator if translator in ALLOWED_TRANSLATORS else "openai"
 
 
 def safe_target_lang(value: Optional[str]) -> str:
@@ -1362,7 +1416,29 @@ def safe_target_lang(value: Optional[str]) -> str:
 
 def safe_realtime_latency(value: Optional[str]) -> str:
     latency = (value or "balanced").strip().lower()
+    latency = REALTIME_LATENCY_ALIASES.get(latency, latency)
     return latency if latency in REALTIME_LATENCY_PROFILES else "balanced"
+
+
+def safe_int_range(value, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def safe_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def should_translate_session(session: Session) -> bool:
@@ -1398,7 +1474,18 @@ def apply_config(session: Session, cfg: dict) -> None:
     session.target_lang = safe_target_lang(cfg.get("targetLang", session.target_lang))
     session.realtime_latency = safe_realtime_latency(cfg.get("realtimeLatency", session.realtime_latency))
     session.task = cfg.get("task", session.task) or "transcribe"
-    if any(key in cfg for key in ("sourceLang", "targetLang", "task", "transcriber")):
+    session.translator = safe_translator(cfg.get("translator", session.translator))
+    session.chunk_duration_ms = safe_int_range(cfg.get("chunkDurationMs"), session.chunk_duration_ms, 250, 5000)
+    session.max_buffer_ms = safe_int_range(cfg.get("maxBufferMs"), session.max_buffer_ms, 250, 10000)
+    session.vad_silence_ms = safe_int_range(cfg.get("vadSilenceMs"), session.vad_silence_ms, 150, 2000)
+    session.partial_emit_enabled = safe_bool(cfg.get("partialEmitEnabled"), session.partial_emit_enabled)
+    session.translation_flush_ms = safe_int_range(
+        cfg.get("translationFlushMs"),
+        session.translation_flush_ms,
+        150,
+        3000,
+    )
+    if any(key in cfg for key in ("sourceLang", "targetLang", "task", "transcriber", "translator")):
         session.local_transcript_buffer.reset()
         session.realtime_transcript_buffer.reset()
 
@@ -1410,7 +1497,11 @@ def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str
     audio = pcm_int16.astype(np.float32) / 32768.0
     model = get_model()
     lang = None if session.source_lang in (None, "", "auto") else session.source_lang
-    whisper_task = "translate" if session.task == "translate" and session.target_lang == "en" else "transcribe"
+    whisper_task = "translate" if (
+        session.translator == "local" and
+        should_translate_session(session) and
+        session.target_lang == "en"
+    ) else "transcribe"
     segments, info = model.transcribe(
         audio,
         language=lang,
@@ -1441,6 +1532,27 @@ def transcribe_chunk_local(session: Session, pcm_int16: np.ndarray) -> tuple[str
         parts.append(seg.text)
     text = "".join(parts).strip()
     return text, (info.language if info and info.language else (lang or "auto")), start, end
+
+
+def transcribe_chunk_openai(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
+    """Returns (raw_text, detected_lang, start, end) from short OpenAI batch chunks."""
+    if pcm_int16.size == 0:
+        return "", session.source_lang or "auto", None, None
+
+    client = get_openai_client()
+    wav_file = pcm_to_wav_file(pcm_int16, session.sample_rate)
+    language = None if session.source_lang in (None, "", "auto") else session.source_lang
+    kwargs = {
+        "model": OPENAI_TRANSCRIBE_MODEL,
+        "file": wav_file,
+        "response_format": "json",
+    }
+    if language:
+        kwargs["language"] = language
+    response = client.audio.transcriptions.create(**kwargs)
+    text = cleanup_transcript_text(getattr(response, "text", "") or "")
+    duration = chunk_duration_s(pcm_int16.size, session.sample_rate)
+    return text, language or session.source_lang or "auto", 0.0 if text else None, duration if text else None
 
 
 def pcm_to_wav_file(pcm_int16: np.ndarray, sample_rate: int) -> io.BytesIO:
@@ -1480,6 +1592,17 @@ async def _handle_chunk(
         sample_count=pcm.size,
         sample_rate=session.sample_rate,
         captured_at=captured_at,
+    )
+    created_at = (captured_at if captured_at is not None else arrived_at)
+    receive_lag_ms = (arrived_at - created_at) * 1000
+    log.info(
+        "latency chunk-created chunkId=%d createdAt=%.3f sendToBackendAt=%.3f backendReceiveAt=%.3f receiveLagMs=%.0f bytes=%d",
+        cid,
+        created_at,
+        arrived_at,
+        time.time(),
+        receive_lag_ms,
+        len(raw_bytes),
     )
 
     # Backlog drop. If processing has slipped behind real-time, this chunk
@@ -1538,8 +1661,19 @@ async def _handle_chunk(
         }))
         return
 
+    transcribe_started_at = time.time()
+    log.info("latency transcribe-start chunkId=%d engine=%s at=%.3f", cid, session.transcriber, transcribe_started_at)
     raw, detected, s_rel, e_rel = await loop.run_in_executor(None, transcribe_chunk, session, pcm)
-    emitted_at = time.time()
+    transcript_ready_at = time.time()
+    log.info(
+        "latency transcript-ready chunkId=%d engine=%s at=%.3f transcribeMs=%.0f totalLagMs=%.0f",
+        cid,
+        session.transcriber,
+        transcript_ready_at,
+        (transcript_ready_at - transcribe_started_at) * 1000,
+        (transcript_ready_at - created_at) * 1000,
+    )
+    emitted_at = transcript_ready_at
     timing = chunk_timing_payload(
         chunk_id=cid,
         received_at=arrived_at,
@@ -1599,6 +1733,7 @@ async def _handle_chunk(
     prepared = session.local_transcript_buffer.prepare(
         raw,
         force=not should_translate_session(session),
+        max_pending_s=max(0.15, session.translation_flush_ms / 1000),
     )
     if not prepared.text:
         log.info(
@@ -1631,25 +1766,61 @@ async def _handle_chunk(
 
     source_text = prepared.text
     src = detected if session.source_lang == "auto" else session.source_lang
-    needs_post_translation = should_translate_session(session) and session.target_lang != "en"
+    local_translation_done = (
+        session.translator == "local" and
+        should_translate_session(session) and
+        session.target_lang == "en"
+    )
+    needs_translation = should_translate_session(session) and session.translator != "local"
     emitted_at = time.time()
     snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
 
-    if needs_post_translation:
-        out = await loop.run_in_executor(
-            None, translate, source_text, src, session.target_lang
+    if needs_translation:
+        await ws.send_text(json.dumps({
+            "type": "transcript",
+            "text": source_text, "raw": source_text,
+            "detectedLang": detected,
+            "captionId": caption_id,
+            "phase": "source-preview",
+            "isFinal": False,
+            **timing,
+            "transcriptEmittedAt": emitted_at,
+            "sync": sync_payload(snapshot),
+        }, ensure_ascii=False))
+        translation_started_at = time.time()
+        log.info(
+            "latency translation-start chunkId=%d source=%s target=%s at=%.3f transcriptLagMs=%.0f",
+            cid,
+            src,
+            session.target_lang,
+            translation_started_at,
+            (translation_started_at - created_at) * 1000,
         )
-        final_phase = "translated-final"
-    elif should_translate_session(session) and session.target_lang == "en":
-        out = source_text  # whisper already translated to English
+        out = await loop.run_in_executor(
+            None, translate, source_text, src, session.target_lang, session.translator
+        )
         final_phase = "translated-final"
     else:
         out = source_text
-        final_phase = "source-final"
+        final_phase = "translated-final" if local_translation_done else "source-final"
 
     emitted_at = time.time()
-    if needs_post_translation:
+    if needs_translation:
         snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
+        log.info(
+            "latency translation-emitted chunkId=%d at=%.3f translateMs=%.0f totalLagMs=%.0f",
+            cid,
+            emitted_at,
+            (emitted_at - translation_started_at) * 1000,
+            (emitted_at - created_at) * 1000,
+        )
+    else:
+        log.info(
+            "latency transcript-emitted chunkId=%d at=%.3f totalLagMs=%.0f",
+            cid,
+            emitted_at,
+            (emitted_at - created_at) * 1000,
+        )
     log.info(
         "chunk #%d [%s->%s] raw=%r out=%r start=%.3f end=%.3f latency=%.3fs auto_offset=%.3fs",
         cid,
@@ -1724,10 +1895,14 @@ async def handle_latest_chunk_queue(
             queue.task_done()
 
 
-def realtime_transcription_session_update(source_lang: Optional[str] = None) -> dict:
+def realtime_transcription_session_update(
+    source_lang: Optional[str] = None,
+    vad_silence_ms: int = VAD_SILENCE_MS,
+) -> dict:
     transcription: dict[str, str] = {"model": OPENAI_REALTIME_TRANSCRIBE_MODEL}
     if source_lang and source_lang != "auto":
         transcription["language"] = source_lang
+    silence_ms = safe_int_range(vad_silence_ms, VAD_SILENCE_MS, 150, 2000)
     return {
         "type": "session.update",
         "session": {
@@ -1742,8 +1917,8 @@ def realtime_transcription_session_update(source_lang: Optional[str] = None) -> 
                     "turn_detection": {
                         "type": "server_vad",
                         "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
+                        "prefix_padding_ms": 180,
+                        "silence_duration_ms": silence_ms,
                     },
                     "noise_reduction": {
                         "type": "near_field",
@@ -1863,7 +2038,10 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
         )
         openai_connected = True
         try:
-            await upstream.send(json.dumps(realtime_transcription_session_update(session.source_lang)))
+            await upstream.send(json.dumps(realtime_transcription_session_update(
+                session.source_lang,
+                session.vad_silence_ms,
+            )))
             await wait_for_openai_session_ack(upstream, context="runtime")
             log.info(
                 "openai realtime transcription connected status=101 source=%s masked=%s rate=%s lang=%s target=%s model=%s",
@@ -1884,6 +2062,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             pending_chunk_meta: Optional[dict] = None
             realtime_caption_seq = 0
             active_caption_id: Optional[str] = None
+            realtime_translated_partials = 0
 
             def current_realtime_caption_id() -> str:
                 nonlocal realtime_caption_seq, active_caption_id
@@ -1908,13 +2087,15 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 timing = realtime_timeline.caption_window(text, is_final=is_final, now=now)
                 caption_id = current_realtime_caption_id()
                 log.info(
-                    "realtime transcript emitted: text=%r captionId=%s phase=%s chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+                    "latency realtime-transcript-emitted text=%r captionId=%s phase=%s chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f emittedAt=%.3f totalLagMs=%.0f",
                     text,
                     caption_id,
                     phase,
                     timing.chunk_id,
                     timing.start_ts,
                     timing.end_ts,
+                    now,
+                    (now - timing.start_ts) * 1000,
                 )
 
                 payload = {
@@ -1928,6 +2109,8 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                     "receivedAt": now,
                     "segmentStartTs": timing.start_ts,
                     "segmentEndTs": timing.end_ts,
+                    "transcriptEmittedAt": now,
+                    "sync": sync_payload(session.sync_tracker.register_transcript_emit(timing.start_ts, now)),
                 }
                 if delta is not None:
                     payload["delta"] = delta
@@ -1949,7 +2132,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 clear_task = asyncio.create_task(clear_after_idle())
 
             async def browser_to_openai() -> None:
-                nonlocal audio_frames_sent, audio_bytes_sent, pending_chunk_meta
+                nonlocal audio_frames_sent, audio_bytes_sent, pending_chunk_meta, realtime_translated_partials
                 while True:
                     msg = await ws.receive()
                     if msg.get("type") == "websocket.disconnect":
@@ -1975,14 +2158,18 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             captured_at=meta_captured_at,
                             duration=meta_duration,
                         )
+                        created_at = meta_captured_at if meta_captured_at is not None else received_at
                         audio_frames_sent += 1
                         audio_bytes_sent += len(msg["bytes"])
-                        if audio_frames_sent == 1 or audio_frames_sent % 100 == 0:
-                            log.info(
-                                "openai realtime audio forwarded frames=%d bytes=%d",
-                                audio_frames_sent,
-                                audio_bytes_sent,
-                            )
+                        log.info(
+                            "latency realtime-send chunkId=%s createdAt=%.3f backendReceiveAt=%.3f sendToOpenAIAt=%.3f receiveLagMs=%.0f bytes=%d",
+                            meta_chunk_id,
+                            created_at,
+                            received_at,
+                            time.time(),
+                            (received_at - created_at) * 1000,
+                            len(msg["bytes"]),
+                        )
                         audio = base64.b64encode(msg["bytes"]).decode("ascii")
                         await upstream.send(json.dumps({
                             "type": "input_audio_buffer.append",
@@ -1997,17 +2184,23 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             old_target = session.target_lang
                             old_source = session.source_lang
                             old_latency = session.realtime_latency
+                            old_vad_silence_ms = session.vad_silence_ms
                             apply_config(session, cfg)
                             if session.realtime_latency != old_latency:
                                 caption_state.set_latency(session.realtime_latency)
-                            if session.source_lang != old_source:
+                            if session.source_lang != old_source or session.vad_silence_ms != old_vad_silence_ms:
                                 raw_transcript_parts.clear()
+                                realtime_translated_partials = 0
                                 caption_state.flush()
                                 realtime_timeline.reset_phrase()
                                 reset_realtime_caption()
-                                await upstream.send(json.dumps(realtime_transcription_session_update(session.source_lang)))
+                                await upstream.send(json.dumps(realtime_transcription_session_update(
+                                    session.source_lang,
+                                    session.vad_silence_ms,
+                                )))
                             if session.target_lang != old_target:
                                 raw_transcript_parts.clear()
+                                realtime_translated_partials = 0
                                 caption_state.flush()
                                 realtime_timeline.reset_phrase()
                                 reset_realtime_caption()
@@ -2016,6 +2209,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             pending_chunk_meta = cfg
 
             async def openai_to_browser() -> None:
+                nonlocal realtime_translated_partials
                 async for raw in upstream:
                     try:
                         event = json.loads(raw)
@@ -2030,12 +2224,51 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         delta = event.get("delta") or ""
                         if not delta:
                             continue
-                        log.info("openai realtime transcript delta chars=%d", len(delta))
+                        delta_at = time.time()
+                        latest_chunk = realtime_timeline.chunks[-1] if realtime_timeline.chunks else None
+                        latest_start = latest_chunk.start_ts if latest_chunk else delta_at
+                        log.info(
+                            "latency realtime-transcript-delta chars=%d at=%.3f totalLagMs=%.0f",
+                            len(delta),
+                            delta_at,
+                            (delta_at - latest_start) * 1000,
+                        )
                         raw_transcript_parts.append(delta)
                         if clear_task:
                             clear_task.cancel()
                         if should_translate_session(session):
-                            caption_state.append(delta)
+                            for text, is_final in caption_state.append(delta):
+                                if not text:
+                                    continue
+                                await send_realtime_caption(
+                                    text,
+                                    is_final=False,
+                                    delta=delta if not is_final else None,
+                                    phase="source-preview",
+                                )
+                                if not is_final or not session.partial_emit_enabled:
+                                    continue
+                                src = session.source_lang if session.source_lang != "auto" else "auto"
+                                translation_started_at = time.time()
+                                translated = await asyncio.to_thread(translate, text, src, session.target_lang, session.translator)
+                                translated_at = time.time()
+                                log.info(
+                                    "latency realtime-translation-emitted phase=partial source=%s target=%s chars=%d outChars=%d translateMs=%.0f totalLagMs=%.0f",
+                                    src,
+                                    session.target_lang,
+                                    len(text),
+                                    len(translated or ""),
+                                    (translated_at - translation_started_at) * 1000,
+                                    (translated_at - latest_start) * 1000,
+                                )
+                                if translated:
+                                    realtime_translated_partials += 1
+                                    await send_realtime_caption(
+                                        translated,
+                                        is_final=True,
+                                        phase="translated-partial",
+                                        reset_caption=True,
+                                    )
                             schedule_idle_clear()
                             continue
                         for text, is_final in caption_state.append(delta):
@@ -2052,10 +2285,17 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         "conversation.item.input_audio_transcription.done",
                         "response.audio_transcript.done",
                     ):
-                        text = event.get("transcript") or "".join(raw_transcript_parts) or caption_state.flush()
+                        if should_translate_session(session) and realtime_translated_partials:
+                            text = caption_state.flush()
+                        else:
+                            text = event.get("transcript") or "".join(raw_transcript_parts) or caption_state.flush()
                         raw_transcript_parts.clear()
                         caption_state.flush()
                         log.info("openai realtime transcript completed chars=%d", len(text or ""))
+                        if not text and realtime_translated_partials:
+                            realtime_translated_partials = 0
+                            schedule_idle_clear()
+                            continue
                         prepared = session.realtime_transcript_buffer.prepare(text, force=True)
                         if not prepared.text:
                             log.info(
@@ -2069,16 +2309,20 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         if text and should_translate_session(session):
                             src = session.source_lang if session.source_lang != "auto" else "auto"
                             raw_text = text
-                            text = await asyncio.to_thread(translate, text, src, session.target_lang)
+                            translation_started_at = time.time()
+                            text = await asyncio.to_thread(translate, text, src, session.target_lang, session.translator)
+                            translated_at = time.time()
                             log.info(
-                                "openai realtime translated final source=%s target=%s raw_chars=%d out_chars=%d",
+                                "latency realtime-translation-emitted phase=final source=%s target=%s rawChars=%d outChars=%d translateMs=%.0f",
                                 src,
                                 session.target_lang,
                                 len(raw_text),
                                 len(text or ""),
+                                (translated_at - translation_started_at) * 1000,
                             )
                             if text:
                                 await send_realtime_caption(text, is_final=True, phase="translated-final", reset_caption=True)
+                            realtime_translated_partials = 0
                         elif text:
                             await send_realtime_caption(text, is_final=True, phase="source-final", reset_caption=True)
                         schedule_idle_clear()
@@ -2145,9 +2389,10 @@ async def handle_socket(ws: WebSocket):
                         await ws.close(code=1008)
                         return
                     apply_config(session, cfg)
-                    log.info("config: rate=%s src=%s tgt=%s task=%s transcriber=%s",
+                    log.info("config: rate=%s src=%s tgt=%s task=%s transcriber=%s translator=%s",
                              session.sample_rate, session.source_lang,
-                             session.target_lang, session.task, session.transcriber)
+                             session.target_lang, session.task, session.transcriber,
+                             session.translator)
             except json.JSONDecodeError:
                 pass
 
@@ -2244,8 +2489,16 @@ async def root():
         "device": DEVICE,
         "compute": _effective_compute_type or resolve_compute_type(DEVICE, COMPUTE_TYPE),
         "transcriber": TRANSCRIBER,
+        "openai_transcribe_model": OPENAI_TRANSCRIBE_MODEL,
         "openai_realtime_model": OPENAI_REALTIME_TRANSCRIBE_MODEL,
         "openai_realtime_url": OPENAI_REALTIME_TRANSCRIBE_URL,
+        "latency": {
+            "chunkDurationMs": CHUNK_DURATION_MS,
+            "maxBufferMs": MAX_BUFFER_MS,
+            "vadSilenceMs": VAD_SILENCE_MS,
+            "partialEmitEnabled": PARTIAL_EMIT_ENABLED,
+            "translationFlushMs": TRANSLATION_FLUSH_MS,
+        },
         "api_key_configured": bool(api_key),
         "api_key_source": api_key_source,
         "api_key_masked": mask_openai_key(api_key),
