@@ -3,9 +3,12 @@ package ai.substream.android.service
 import ai.substream.android.audio.PcmUtils
 import ai.substream.android.audio.PlaybackAudioCapture
 import ai.substream.android.data.AppSettings
+import ai.substream.android.data.CaptionStage
+import ai.substream.android.data.CaptionUpdate
 import ai.substream.android.data.EngineMode
 import ai.substream.android.data.OverlayPosition
 import ai.substream.android.data.SubtitleMode
+import ai.substream.android.data.TranslationDisplayMode
 import ai.substream.android.engine.LocalWhisperEngine
 import ai.substream.android.net.CloudRealtimeClient
 import ai.substream.android.overlay.CaptionOverlay
@@ -21,6 +24,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +43,7 @@ class CaptureService : Service() {
     private var localEngine: LocalWhisperEngine? = null
     private var activeSettings: AppSettings? = null
     private var pendingCaptionUpdate: Runnable? = null
+    private var pendingTranslationSegmentId: String? = null
     private var lastSilentStatusAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -133,7 +138,7 @@ class CaptureService : Service() {
                 onAudio = audio@ { bytes, _ ->
                     if (PcmUtils.rms(bytes) < SILENCE_RMS) {
                         maybeShowSilentStatus()
-                        updateCaption("")
+                        clearCaptionIfSafe()
                         return@audio
                     }
                     when (settings.engine) {
@@ -155,6 +160,7 @@ class CaptureService : Service() {
         localEngine = null
         pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
         pendingCaptionUpdate = null
+        pendingTranslationSegmentId = null
         activeSettings = null
         if (stopProjection) {
             projection?.runCatching { stop() }
@@ -173,14 +179,54 @@ class CaptureService : Service() {
         }
     }
 
-    private fun updateCaption(text: String) {
-        val delayMs = activeSettings?.subtitleMode?.captionDelayMs() ?: 0L
-        pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
-        val update = Runnable {
-            overlay?.updateCaption(text)
+    private fun updateCaption(update: CaptionUpdate) {
+        val settings = activeSettings ?: return
+        if (update.stage == CaptionStage.Source && !settings.showSourceFirst) return
+
+        val segmentId = update.segmentId.ifBlank { update.chunkId }
+        val isTranslation = update.stage == CaptionStage.Translation
+        if (!isTranslation || pendingTranslationSegmentId != segmentId) {
+            pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
         }
-        pendingCaptionUpdate = update
-        mainHandler.postDelayed(update, delayMs)
+        val displayText = update.displayText(settings)
+        if (displayText.isBlank()) return
+
+        val delayMs = if (
+            isTranslation &&
+            pendingTranslationSegmentId == segmentId &&
+            settings.translationGraceMs > 0
+        ) {
+            settings.translationGraceMs
+        } else {
+            0L
+        }
+
+        if (isTranslation) {
+            Log.d(
+                TAG,
+                "translation emitted segmentId=$segmentId chunkId=${update.chunkId} delayMs=${update.transcriptToTranslationDelayMs}",
+            )
+            pendingTranslationSegmentId = segmentId.takeIf { it.isNotBlank() }
+        } else {
+            pendingTranslationSegmentId = segmentId.takeIf { it.isNotBlank() }
+            Log.d(TAG, "transcript emitted segmentId=$segmentId chunkId=${update.chunkId} phase=${update.phase}")
+        }
+
+        val captionRunnable = Runnable {
+            overlay?.updateCaption(displayText)
+            if (isTranslation && pendingTranslationSegmentId == segmentId) {
+                pendingTranslationSegmentId = null
+            }
+        }
+        pendingCaptionUpdate = captionRunnable
+        mainHandler.postDelayed(captionRunnable, delayMs)
+    }
+
+    private fun clearCaptionIfSafe() {
+        if (pendingTranslationSegmentId != null) return
+        pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
+        pendingCaptionUpdate = null
+        mainHandler.post { overlay?.updateCaption("") }
     }
 
     private fun updateStatus(status: String) {
@@ -219,6 +265,9 @@ class CaptureService : Service() {
             overlayPosition = OverlayPosition.fromWire(getStringExtra(EXTRA_OVERLAY_POSITION)),
             fontSizeSp = getIntExtra(EXTRA_FONT_SIZE, 28),
             subtitleMode = SubtitleMode.fromWire(getStringExtra(EXTRA_SUBTITLE_MODE)),
+            showSourceFirst = getBooleanExtra(EXTRA_SHOW_SOURCE_FIRST, true),
+            translationDisplayMode = TranslationDisplayMode.fromWire(getStringExtra(EXTRA_TRANSLATION_DISPLAY_MODE)),
+            translationGraceMs = getLongExtra(EXTRA_TRANSLATION_GRACE_MS, 200L).coerceIn(0L, 2_000L),
         )
     }
 
@@ -250,6 +299,10 @@ class CaptureService : Service() {
         private const val EXTRA_OVERLAY_POSITION = "overlay_position"
         private const val EXTRA_FONT_SIZE = "font_size"
         private const val EXTRA_SUBTITLE_MODE = "subtitle_mode"
+        private const val EXTRA_SHOW_SOURCE_FIRST = "show_source_first"
+        private const val EXTRA_TRANSLATION_DISPLAY_MODE = "translation_display_mode"
+        private const val EXTRA_TRANSLATION_GRACE_MS = "translation_grace_ms"
+        private const val TAG = "SubStreamCapture"
 
         fun ensureNotificationChannel(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -282,6 +335,9 @@ class CaptureService : Service() {
                 .putExtra(EXTRA_OVERLAY_POSITION, settings.overlayPosition.wireValue)
                 .putExtra(EXTRA_FONT_SIZE, settings.fontSizeSp)
                 .putExtra(EXTRA_SUBTITLE_MODE, settings.subtitleMode.wireValue)
+                .putExtra(EXTRA_SHOW_SOURCE_FIRST, settings.showSourceFirst)
+                .putExtra(EXTRA_TRANSLATION_DISPLAY_MODE, settings.translationDisplayMode.wireValue)
+                .putExtra(EXTRA_TRANSLATION_GRACE_MS, settings.translationGraceMs)
             ContextCompat.startForegroundService(context, intent)
         }
 
@@ -291,10 +347,18 @@ class CaptureService : Service() {
     }
 }
 
-private fun SubtitleMode.captionDelayMs(): Long {
-    return when (this) {
-        SubtitleMode.Fast -> 0L
-        SubtitleMode.Balanced -> 500L
-        SubtitleMode.Accurate -> 900L
+private fun CaptionUpdate.displayText(settings: AppSettings): String {
+    val source = sourceText.ifBlank { if (stage == CaptionStage.Source) text else "" }.trim()
+    val translated = translatedText.ifBlank { if (stage == CaptionStage.Translation) text else "" }.trim()
+    return if (
+        stage == CaptionStage.Translation &&
+        settings.translationDisplayMode == TranslationDisplayMode.TranslationDual &&
+        source.isNotBlank() &&
+        translated.isNotBlank() &&
+        source != translated
+    ) {
+        "$source\n$translated"
+    } else {
+        translated.ifBlank { source.ifBlank { text.trim() } }
     }
 }

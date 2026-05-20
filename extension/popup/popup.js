@@ -21,6 +21,9 @@ const els = {
   subtitleDelayVal: $('subtitleDelayVal'),
   subtitleDuration: $('subtitleDuration'),
   subtitleDurationVal: $('subtitleDurationVal'),
+  showSourceFirst: $('showSourceFirst'),
+  translationDisplayMode: $('translationDisplayMode'),
+  translationGraceMs: $('translationGraceMs'),
   resetSubtitleDelay: $('resetSubtitleDelay'),
   syncMode: $('syncMode'),
   syncAutoState: $('syncAutoState'),
@@ -47,13 +50,16 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 13,
+  settingsVersion: 14,
   sourceLang: 'auto',
   targetLang: 'en',
   fontSize: 28,
   position: 'bottom',
   subtitleDelayMs: 0,
   subtitleDurationMs: 2600,
+  showSourceFirst: true,
+  translationDisplayMode: 'translation_replace',
+  translationGraceMs: 200,
   syncMode: 'auto',
   transcriber: 'openai-realtime',
   backendUrl: 'ws://127.0.0.1:8765/ws',
@@ -99,6 +105,9 @@ const LIVE_SETTINGS = new Set([
   'position',
   'subtitleDelayMs',
   'subtitleDurationMs',
+  'showSourceFirst',
+  'translationDisplayMode',
+  'translationGraceMs',
   'syncMode',
   'realtimeLatency',
   'chunkDurationMs',
@@ -115,6 +124,9 @@ const SETTING_FIELDS = [
   'position',
   'subtitleDelay',
   'subtitleDuration',
+  'showSourceFirst',
+  'translationDisplayMode',
+  'translationGraceMs',
   'syncMode',
   'transcriber',
   'backendUrl',
@@ -131,6 +143,9 @@ const MIN_SUBTITLE_OFFSET_MS = -10000;
 const MAX_SUBTITLE_OFFSET_MS = 10000;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
+const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
+const MIN_TRANSLATION_GRACE_MS = 0;
+const MAX_TRANSLATION_GRACE_MS = 2000;
 
 let currentSettings = null;
 let apiKeyInfo = { configured: false, source: null };
@@ -141,7 +156,7 @@ let saveDebounceTimer = null;
 function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'; }
 
 function translatorForTranscriber(transcriber) {
-  return transcriber === 'local' ? 'local' : 'openai';
+  return 'openai';
 }
 
 function normalizeSubtitleMode(value) {
@@ -207,6 +222,17 @@ function clampSubtitleDurationMs(ms) {
   const value = parseInt(ms, 10);
   if (!Number.isFinite(value)) return DEFAULTS.subtitleDurationMs;
   return Math.max(MIN_SUBTITLE_DURATION_MS, Math.min(MAX_SUBTITLE_DURATION_MS, value));
+}
+
+function normalizeTranslationDisplayMode(value) {
+  const mode = String(value || DEFAULTS.translationDisplayMode).trim().toLowerCase();
+  return TRANSLATION_DISPLAY_MODES.has(mode) ? mode : DEFAULTS.translationDisplayMode;
+}
+
+function clampTranslationGraceMs(ms) {
+  const value = parseInt(ms, 10);
+  if (!Number.isFinite(value)) return DEFAULTS.translationGraceMs;
+  return Math.max(MIN_TRANSLATION_GRACE_MS, Math.min(MAX_TRANSLATION_GRACE_MS, value));
 }
 
 function clampMs(ms, min, max, fallback) {
@@ -294,6 +320,9 @@ async function loadSettings() {
   }
   s.subtitleDelayMs = clampSubtitleDelayMs(s.subtitleDelayMs);
   s.subtitleDurationMs = clampSubtitleDurationMs(s.subtitleDurationMs);
+  s.showSourceFirst = typeof s.showSourceFirst === 'boolean' ? s.showSourceFirst : DEFAULTS.showSourceFirst;
+  s.translationDisplayMode = normalizeTranslationDisplayMode(s.translationDisplayMode);
+  s.translationGraceMs = clampTranslationGraceMs(s.translationGraceMs);
   if (s.syncMode === 'auto_local_whisper') {
     s.syncMode = 'auto';
   }
@@ -318,6 +347,9 @@ async function loadSettings() {
   els.subtitleDelayVal.textContent = formatSubtitleDelay(s.subtitleDelayMs);
   els.subtitleDuration.value = s.subtitleDurationMs;
   els.subtitleDurationVal.textContent = formatSubtitleDuration(s.subtitleDurationMs);
+  els.showSourceFirst.checked = s.showSourceFirst;
+  els.translationDisplayMode.value = s.translationDisplayMode;
+  els.translationGraceMs.value = s.translationGraceMs;
   els.syncMode.value = s.syncMode;
   els.transcriber.value = s.transcriber;
   els.backendUrl.value = s.backendUrl;
@@ -346,6 +378,9 @@ function readSettingsFromForm() {
     position: els.position.value,
     subtitleDelayMs: clampSubtitleDelayMs(els.subtitleDelay.value),
     subtitleDurationMs: clampSubtitleDurationMs(els.subtitleDuration.value),
+    showSourceFirst: !!els.showSourceFirst.checked,
+    translationDisplayMode: normalizeTranslationDisplayMode(els.translationDisplayMode.value),
+    translationGraceMs: clampTranslationGraceMs(els.translationGraceMs.value),
     syncMode: els.syncMode.value === 'manual' ? 'manual' : 'auto',
     transcriber: els.transcriber.value,
     translator: translatorForTranscriber(els.transcriber.value),
@@ -439,7 +474,7 @@ function renderModeStatus(res = {}) {
       ? setModeStatus('OpenAI Chunked ready', 'ready')
       : setModeStatus('API key required', 'warn');
   }
-  return setModeStatus('Local Whisper, no API key', 'ready');
+  return setModeStatus('Local Whisper transcription ready', 'ready');
 }
 
 function shortBackendError(info) {
@@ -700,6 +735,17 @@ els.subtitleDelay.addEventListener('input', () => {
 els.subtitleDuration.addEventListener('input', () => {
   els.subtitleDurationVal.textContent = formatSubtitleDuration(els.subtitleDuration.value);
   debounceSettingsApply(false);
+});
+els.showSourceFirst.addEventListener('change', () => {
+  saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+});
+els.translationDisplayMode.addEventListener('change', () => {
+  els.translationDisplayMode.value = normalizeTranslationDisplayMode(els.translationDisplayMode.value);
+  saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+});
+els.translationGraceMs.addEventListener('change', () => {
+  els.translationGraceMs.value = clampTranslationGraceMs(els.translationGraceMs.value);
+  saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
 els.syncMode.addEventListener('change', () => {
   debounceSettingsApply(false);

@@ -2,8 +2,11 @@ package ai.substream.android.engine
 
 import ai.substream.android.audio.PcmUtils
 import ai.substream.android.data.AppSettings
+import ai.substream.android.data.CaptionStage
+import ai.substream.android.data.CaptionUpdate
 import ai.substream.android.net.BackendTranslator
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,7 +19,7 @@ import kotlinx.coroutines.withContext
 class LocalWhisperEngine(
     context: Context,
     private val settings: AppSettings,
-    private val onCaption: (String) -> Unit,
+    private val onCaption: (CaptionUpdate) -> Unit,
     private val onStatus: (String) -> Unit,
 ) {
     private val appContext = context.applicationContext
@@ -27,6 +30,7 @@ class LocalWhisperEngine(
     private var pcmBuffer = ByteArray(0)
     private var contextPtr = 0L
     private var ready = false
+    private var segmentSeq = 0
 
     fun start() {
         scope.launch {
@@ -52,7 +56,6 @@ class LocalWhisperEngine(
         if (pcmBuffer.size < chunkBytes) return
 
         if (PcmUtils.rms(pcmBuffer) < SILENCE_RMS) {
-            onCaption("")
             pcmBuffer = ByteArray(0)
             return
         }
@@ -89,18 +92,54 @@ class LocalWhisperEngine(
                     }
                 }
                 if (raw.isBlank()) {
-                    onCaption("")
                     return@runCatching
                 }
 
+                val segmentId = "local:${++segmentSeq}"
+                val sourceEmittedAt = System.currentTimeMillis()
                 val caption = if (translateToEnglish) {
                     raw
                 } else {
-                    onCaption(raw)
+                    if (settings.showSourceFirst) {
+                        Log.d(TAG, "transcript emitted segmentId=$segmentId chunkId=$segmentSeq phase=source-preview")
+                        onCaption(
+                            CaptionUpdate(
+                                text = raw,
+                                sourceText = raw,
+                                segmentId = segmentId,
+                                chunkId = segmentSeq.toString(),
+                                stage = CaptionStage.Source,
+                                phase = "source-preview",
+                                transcriptEmittedAtMs = sourceEmittedAt,
+                            ),
+                        )
+                    }
                     onStatus("Translating through backend")
                     translator.translate(raw)
                 }
-                onCaption(caption)
+                val translatedAt = System.currentTimeMillis()
+                val stage = if (translateToEnglish) CaptionStage.Source else CaptionStage.Translation
+                val phase = if (translateToEnglish) "source-final" else "translated-final"
+                if (stage == CaptionStage.Translation) {
+                    Log.d(
+                        TAG,
+                        "translation emitted segmentId=$segmentId chunkId=$segmentSeq delayMs=${translatedAt - sourceEmittedAt}",
+                    )
+                }
+                onCaption(
+                    CaptionUpdate(
+                        text = caption,
+                        sourceText = raw,
+                        translatedText = if (stage == CaptionStage.Translation) caption else "",
+                        segmentId = segmentId,
+                        chunkId = segmentSeq.toString(),
+                        stage = stage,
+                        phase = phase,
+                        transcriptEmittedAtMs = sourceEmittedAt,
+                        translationEmittedAtMs = if (stage == CaptionStage.Translation) translatedAt else null,
+                        transcriptToTranslationDelayMs = if (stage == CaptionStage.Translation) translatedAt - sourceEmittedAt else null,
+                    ),
+                )
             }.onFailure {
                 onStatus("Local caption failed: ${it.message ?: "unknown error"}")
             }
@@ -115,6 +154,7 @@ class LocalWhisperEngine(
     }
 
     companion object {
+        private const val TAG = "SubStreamLocal"
         private const val SILENCE_RMS = 0.005f
     }
 }

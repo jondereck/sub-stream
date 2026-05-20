@@ -1,8 +1,10 @@
 package ai.substream.android.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -21,6 +23,9 @@ class SettingsStore(private val context: Context) {
         val OverlayPosition = stringPreferencesKey("overlay_position")
         val FontSize = intPreferencesKey("font_size")
         val SubtitleMode = stringPreferencesKey("subtitle_mode")
+        val ShowSourceFirst = booleanPreferencesKey("show_source_first")
+        val TranslationDisplayMode = stringPreferencesKey("translation_display_mode")
+        val TranslationGraceMs = longPreferencesKey("translation_grace_ms")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
@@ -34,6 +39,9 @@ class SettingsStore(private val context: Context) {
             overlayPosition = OverlayPosition.fromWire(prefs[Keys.OverlayPosition]),
             fontSizeSp = prefs[Keys.FontSize] ?: 28,
             subtitleMode = SubtitleMode.fromWire(prefs[Keys.SubtitleMode]),
+            showSourceFirst = prefs[Keys.ShowSourceFirst] ?: true,
+            translationDisplayMode = TranslationDisplayMode.fromWire(prefs[Keys.TranslationDisplayMode]),
+            translationGraceMs = prefs[Keys.TranslationGraceMs] ?: 200L,
         )
     }
 
@@ -48,6 +56,9 @@ class SettingsStore(private val context: Context) {
             prefs[Keys.OverlayPosition] = settings.overlayPosition.wireValue
             prefs[Keys.FontSize] = settings.fontSizeSp
             prefs[Keys.SubtitleMode] = settings.subtitleMode.wireValue
+            prefs[Keys.ShowSourceFirst] = settings.showSourceFirst
+            prefs[Keys.TranslationDisplayMode] = settings.translationDisplayMode.wireValue
+            prefs[Keys.TranslationGraceMs] = settings.translationGraceMs
         }
     }
 }

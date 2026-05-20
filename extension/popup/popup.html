@@ -112,6 +112,24 @@
           </label>
 
           <label>
+            Translation display
+            <select id="translationDisplayMode">
+              <option value="translation_replace" selected>Replace source with translation</option>
+              <option value="translation_dual">Source + translation</option>
+            </select>
+          </label>
+
+          <label class="checkbox-setting">
+            <input type="checkbox" id="showSourceFirst" checked />
+            <span>Show source transcript first</span>
+          </label>
+
+          <label>
+            Translation grace (ms)
+            <input type="number" id="translationGraceMs" min="0" max="2000" step="50" value="200" />
+          </label>
+
+          <label>
             Sync mode
             <select id="syncMode">
               <option value="auto" selected>Auto timeline sync</option>

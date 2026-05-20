@@ -117,6 +117,7 @@ from config import (
     MAX_CHUNK_LAG_S, MOBILE_TOKEN, OPENAI_TRANSLATION_MODEL,
     OPENAI_TRANSCRIBE_MODEL, CHUNK_DURATION_MS, MAX_BUFFER_MS,
     VAD_SILENCE_MS, PARTIAL_EMIT_ENABLED, TRANSLATION_FLUSH_MS,
+    SHOW_SOURCE_FIRST, TRANSLATION_DISPLAY_MODE, TRANSLATION_GRACE_MS,
 )
 
 log = logging.getLogger("sub-stream-ai")
@@ -150,6 +151,7 @@ PARTIAL_TRANSLATION_BY_LATENCY = {
 }
 ALLOWED_TRANSCRIBERS = {"local", REALTIME_TRANSCRIBER, OPENAI_CHUNKED_TRANSCRIBER}
 ALLOWED_TRANSLATORS = {"openai", "gpt", "google", "local", "none"}
+ALLOWED_TRANSLATION_DISPLAY_MODES = {"translation_replace", "translation_dual"}
 ALLOWED_TARGET_LANGS = {
     "ar", "en", "es", "fr", "de", "tr", "ja", "ko", "zh", "hi",
     "it", "pt", "ru", "id", "ms", "th", "vi", "fil",
@@ -1230,6 +1232,13 @@ class Session:
     vad_silence_ms: int = VAD_SILENCE_MS
     partial_emit_enabled: bool = PARTIAL_EMIT_ENABLED
     translation_flush_ms: int = TRANSLATION_FLUSH_MS
+    show_source_first: bool = SHOW_SOURCE_FIRST
+    translation_display_mode: str = (
+        TRANSLATION_DISPLAY_MODE
+        if TRANSLATION_DISPLAY_MODE in ALLOWED_TRANSLATION_DISPLAY_MODES
+        else "translation_replace"
+    )
+    translation_grace_ms: int = TRANSLATION_GRACE_MS
     chunk_id: int = 0
     next_chunk_id: Optional[int] = None
     next_chunk_captured_at: Optional[float] = None
@@ -1359,6 +1368,14 @@ def caption_duration_s(text: str) -> float:
     return max(REALTIME_MIN_SEGMENT_S, min(REALTIME_MAX_SEGMENT_S, estimated))
 
 
+def chunk_age_s(created_at: Optional[float], fallback_at: float) -> float:
+    return time.time() - (created_at if created_at is not None else fallback_at)
+
+
+def chunk_is_stale(created_at: Optional[float], fallback_at: float) -> bool:
+    return chunk_age_s(created_at, fallback_at) > MAX_CHUNK_LAG_S
+
+
 def chunk_timing_payload(
     *,
     chunk_id: int,
@@ -1397,6 +1414,92 @@ def caption_id_for(session: Session, prefix: str, chunk_id: int) -> str:
     return f"{session.session_id}:{prefix}:{chunk_id}"
 
 
+def subtitle_stage_from_phase(phase: str) -> str:
+    return "translation" if (phase or "").startswith("translated") else "source"
+
+
+def transcript_payload(
+    session: Session,
+    *,
+    text: str,
+    caption_id: str,
+    segment_id: str,
+    phase: str,
+    is_final: bool,
+    timing: dict,
+    sync: dict,
+    emitted_at: float,
+    source_text: Optional[str] = None,
+    translated_text: Optional[str] = None,
+    detected_lang: Optional[str] = None,
+    delta: Optional[str] = None,
+    translation_started_at: Optional[float] = None,
+    extra: Optional[dict] = None,
+) -> dict:
+    stage = subtitle_stage_from_phase(phase)
+    source = cleanup_transcript_text(source_text if source_text is not None else text)
+    translated = cleanup_transcript_text(translated_text if translated_text is not None else (text if stage == "translation" else ""))
+    payload = {
+        "type": "transcript",
+        "text": text,
+        "raw": source,
+        "sourceText": source,
+        "translatedText": translated,
+        "stage": stage,
+        "captionId": caption_id,
+        "segmentId": segment_id,
+        "phase": phase,
+        "isFinal": is_final,
+        "showSourceFirst": session.show_source_first,
+        "translationDisplayMode": session.translation_display_mode,
+        "translationGraceMs": session.translation_grace_ms,
+        **timing,
+        "transcriptEmittedAt": emitted_at,
+        "sync": sync,
+    }
+    if detected_lang:
+        payload["detectedLang"] = detected_lang
+    if delta is not None:
+        payload["delta"] = delta
+    if translation_started_at is not None:
+        payload["translationStartedAt"] = translation_started_at
+        payload["translationEmittedAt"] = emitted_at
+        payload["transcriptToTranslationDelayMs"] = max(0, round((emitted_at - translation_started_at) * 1000))
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def log_subtitle_emit(payload: dict) -> None:
+    stage = payload.get("stage")
+    segment_id = payload.get("segmentId")
+    chunk_id = payload.get("chunkId")
+    phase = payload.get("phase")
+    text = payload.get("text") or ""
+    if stage == "translation":
+        log.info(
+            "translation emitted segmentId=%s chunkId=%s phase=%s chars=%d transcriptToTranslationDelayMs=%s",
+            segment_id,
+            chunk_id,
+            phase,
+            len(text),
+            payload.get("transcriptToTranslationDelayMs"),
+        )
+    else:
+        log.info(
+            "transcript emitted segmentId=%s chunkId=%s phase=%s chars=%d",
+            segment_id,
+            chunk_id,
+            phase,
+            len(text),
+        )
+
+
+async def send_transcript_payload(ws: WebSocket, payload: dict) -> None:
+    log_subtitle_emit(payload)
+    await ws.send_text(json.dumps(payload, ensure_ascii=False))
+
+
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str, Optional[float], Optional[float]]:
     """Returns (raw_text, detected_lang, start, end)."""
     if session.transcriber == OPENAI_CHUNKED_TRANSCRIBER:
@@ -1423,6 +1526,11 @@ def safe_realtime_latency(value: Optional[str]) -> str:
     latency = (value or "balanced").strip().lower()
     latency = REALTIME_LATENCY_ALIASES.get(latency, latency)
     return latency if latency in REALTIME_LATENCY_PROFILES else "balanced"
+
+
+def safe_translation_display_mode(value: Optional[str]) -> str:
+    mode = (value or "translation_replace").strip().lower()
+    return mode if mode in ALLOWED_TRANSLATION_DISPLAY_MODES else "translation_replace"
 
 
 def safe_int_range(value, default: int, minimum: int, maximum: int) -> int:
@@ -1494,6 +1602,16 @@ def apply_config(session: Session, cfg: dict) -> None:
         session.translation_flush_ms,
         150,
         3000,
+    )
+    session.show_source_first = safe_bool(cfg.get("showSourceFirst"), session.show_source_first)
+    session.translation_display_mode = safe_translation_display_mode(
+        cfg.get("translationDisplayMode", session.translation_display_mode)
+    )
+    session.translation_grace_ms = safe_int_range(
+        cfg.get("translationGraceMs"),
+        session.translation_grace_ms,
+        0,
+        2000,
     )
     if any(key in cfg for key in ("sourceLang", "targetLang", "task", "transcriber", "translator")):
         session.local_transcript_buffer.reset()
@@ -1595,6 +1713,7 @@ async def _handle_chunk(
         cid = session.chunk_id
 
     caption_id = caption_id_for(session, "chunk", cid)
+    segment_id = caption_id
     pcm = np.frombuffer(raw_bytes, dtype=np.int16)
     timing = chunk_timing_payload(
         chunk_id=cid,
@@ -1619,7 +1738,7 @@ async def _handle_chunk(
     # is already stale by the time we get to it. Subs from 15s ago are
     # worse UX than no subs at all — drop and let the next (fresher) chunk
     # catch us up. Send empty so the overlay clears.
-    lag = time.time() - captured_at if captured_at else time.time() - arrived_at
+    lag = chunk_age_s(captured_at, arrived_at)
     if lag > MAX_CHUNK_LAG_S:
         session.local_transcript_buffer.reset()
         log.info("chunk #%d: dropped (lag=%.2fs > %.1fs)", cid, lag, MAX_CHUNK_LAG_S)
@@ -1629,15 +1748,18 @@ async def _handle_chunk(
             timing["segmentStartTs"],
             timing["segmentEndTs"],
         )
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": "",
-            "captionId": caption_id,
-            "phase": "source-final",
-            "isFinal": True, "dropped": "lag",
-            **timing,
-            "sync": sync_payload(session.sync_tracker.current_snapshot()),
-        }))
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text="",
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-final",
+            is_final=True,
+            timing=timing,
+            sync=sync_payload(session.sync_tracker.current_snapshot()),
+            emitted_at=time.time(),
+            extra={"dropped": "lag"},
+        ))
         return
 
     if pcm.size:
@@ -1660,15 +1782,18 @@ async def _handle_chunk(
             timing["segmentStartTs"],
             timing["segmentEndTs"],
         )
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": "",
-            "captionId": caption_id,
-            "phase": "source-final",
-            "isFinal": True, "silence": True,
-            **timing,
-            "sync": sync_payload(session.sync_tracker.current_snapshot()),
-        }))
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text="",
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-final",
+            is_final=True,
+            timing=timing,
+            sync=sync_payload(session.sync_tracker.current_snapshot()),
+            emitted_at=time.time(),
+            extra={"silence": True},
+        ))
         return
 
     transcribe_started_at = time.time()
@@ -1683,6 +1808,16 @@ async def _handle_chunk(
         (transcript_ready_at - transcribe_started_at) * 1000,
         (transcript_ready_at - created_at) * 1000,
     )
+    if chunk_is_stale(captured_at, arrived_at):
+        session.local_transcript_buffer.reset()
+        log.info(
+            "chunk #%d: dropped after transcribe (age=%.2fs > %.1fs) raw=%r",
+            cid,
+            chunk_age_s(captured_at, arrived_at),
+            MAX_CHUNK_LAG_S,
+            raw,
+        )
+        return
     emitted_at = transcript_ready_at
     timing = chunk_timing_payload(
         chunk_id=cid,
@@ -1704,16 +1839,18 @@ async def _handle_chunk(
             timing["segmentStartTs"],
             timing["segmentEndTs"],
         )
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": "",
-            "captionId": caption_id,
-            "phase": "source-final",
-            "isFinal": True, "empty": True,
-            **timing,
-            "transcriptEmittedAt": emitted_at,
-            "sync": sync_payload(session.sync_tracker.current_snapshot()),
-        }))
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text="",
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-final",
+            is_final=True,
+            timing=timing,
+            sync=sync_payload(session.sync_tracker.current_snapshot()),
+            emitted_at=emitted_at,
+            extra={"empty": True},
+        ))
         return
 
     # Drop whole-chunk fansub-credit hallucinations BEFORE translating or
@@ -1728,17 +1865,40 @@ async def _handle_chunk(
             timing["segmentStartTs"],
             timing["segmentEndTs"],
         )
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": raw,
-            "captionId": caption_id,
-            "phase": "source-final",
-            "isFinal": True, "filtered": "hallucination",
-            **timing,
-            "transcriptEmittedAt": emitted_at,
-            "sync": sync_payload(session.sync_tracker.current_snapshot()),
-        }, ensure_ascii=False))
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text="",
+            source_text=raw,
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-final",
+            is_final=True,
+            timing=timing,
+            sync=sync_payload(session.sync_tracker.current_snapshot()),
+            emitted_at=emitted_at,
+            extra={"filtered": "hallucination"},
+        ))
         return
+
+    source_preview_sent = False
+    raw_source_text = cleanup_transcript_text(raw)
+    if should_translate_session(session) and session.show_source_first and session.translator != "local" and raw_source_text:
+        emitted_at = time.time()
+        snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text=raw_source_text,
+            source_text=raw_source_text,
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-preview",
+            is_final=False,
+            timing=timing,
+            sync=sync_payload(snapshot),
+            emitted_at=emitted_at,
+            detected_lang=detected,
+        ))
+        source_preview_sent = True
 
     prepared = session.local_transcript_buffer.prepare(
         raw,
@@ -1760,18 +1920,22 @@ async def _handle_chunk(
             timing["segmentStartTs"],
             timing["segmentEndTs"],
         )
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": cleanup_transcript_text(raw),
-            "captionId": caption_id,
-            "phase": "source-final",
-            "isFinal": True,
-            "filtered": prepared.reason or "transcript-prep",
-            "held": prepared.held,
-            **timing,
-            "transcriptEmittedAt": emitted_at,
-            "sync": sync_payload(session.sync_tracker.current_snapshot()),
-        }, ensure_ascii=False))
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text="",
+            source_text=cleanup_transcript_text(raw),
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-final",
+            is_final=True,
+            timing=timing,
+            sync=sync_payload(session.sync_tracker.current_snapshot()),
+            emitted_at=emitted_at,
+            extra={
+                "filtered": prepared.reason or "transcript-prep",
+                "held": prepared.held,
+            },
+        ))
         return
 
     source_text = prepared.text
@@ -1785,18 +1949,21 @@ async def _handle_chunk(
     emitted_at = time.time()
     snapshot = session.sync_tracker.register_transcript_emit(captured_at, emitted_at)
 
+    if needs_translation and not source_preview_sent:
+        await send_transcript_payload(ws, transcript_payload(
+            session,
+            text=source_text,
+            source_text=source_text,
+            caption_id=caption_id,
+            segment_id=segment_id,
+            phase="source-preview",
+            is_final=False,
+            timing=timing,
+            sync=sync_payload(snapshot),
+            emitted_at=emitted_at,
+            detected_lang=detected,
+        ))
     if needs_translation:
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": source_text, "raw": source_text,
-            "detectedLang": detected,
-            "captionId": caption_id,
-            "phase": "source-preview",
-            "isFinal": False,
-            **timing,
-            "transcriptEmittedAt": emitted_at,
-            "sync": sync_payload(snapshot),
-        }, ensure_ascii=False))
         translation_started_at = time.time()
         log.info(
             "latency translation-start chunkId=%d source=%s target=%s at=%.3f transcriptLagMs=%.0f",
@@ -1809,6 +1976,16 @@ async def _handle_chunk(
         out = await loop.run_in_executor(
             None, translate, source_text, src, session.target_lang, session.translator
         )
+        if chunk_is_stale(captured_at, arrived_at):
+            log.info(
+                "chunk #%d: dropped translation after processing (age=%.2fs > %.1fs) source=%r translated=%r",
+                cid,
+                chunk_age_s(captured_at, arrived_at),
+                MAX_CHUNK_LAG_S,
+                source_text,
+                out,
+            )
+            return
         final_phase = "translated-final"
     else:
         out = source_text
@@ -1849,17 +2026,21 @@ async def _handle_chunk(
         timing["segmentStartTs"],
         timing["segmentEndTs"],
     )
-    await ws.send_text(json.dumps({
-        "type": "transcript",
-        "text": out, "raw": source_text,
-        "detectedLang": detected,
-        "captionId": caption_id,
-        "phase": final_phase,
-        "isFinal": True,
-        **timing,
-        "transcriptEmittedAt": emitted_at,
-        "sync": sync_payload(snapshot),
-    }, ensure_ascii=False))
+    await send_transcript_payload(ws, transcript_payload(
+        session,
+        text=out,
+        source_text=source_text,
+        translated_text=out if final_phase.startswith("translated") else "",
+        caption_id=caption_id,
+        segment_id=segment_id,
+        phase=final_phase,
+        is_final=True,
+        timing=timing,
+        sync=sync_payload(snapshot),
+        emitted_at=emitted_at,
+        detected_lang=detected,
+        translation_started_at=translation_started_at if needs_translation else None,
+    ))
 
 
 async def replace_latest_chunk(
@@ -2091,6 +2272,9 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 is_final: bool = False,
                 delta: Optional[str] = None,
                 phase: str = "interim",
+                source_text: Optional[str] = None,
+                translated_text: Optional[str] = None,
+                translation_started_at: Optional[float] = None,
                 reset_caption: bool = False,
             ) -> None:
                 now = time.time()
@@ -2107,24 +2291,29 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                     now,
                     (now - timing.start_ts) * 1000,
                 )
-
-                payload = {
-                    "type": "transcript",
-                    "text": text,
-                    "isFinal": is_final,
-                    "mode": REALTIME_TRANSCRIBER,
-                    "captionId": caption_id,
-                    "phase": phase,
+                timing_payload = {
                     "chunkId": timing.chunk_id,
                     "receivedAt": now,
                     "segmentStartTs": timing.start_ts,
                     "segmentEndTs": timing.end_ts,
-                    "transcriptEmittedAt": now,
-                    "sync": sync_payload(session.sync_tracker.register_transcript_emit(timing.start_ts, now)),
                 }
-                if delta is not None:
-                    payload["delta"] = delta
-                await ws.send_text(json.dumps(payload, ensure_ascii=False))
+                payload = transcript_payload(
+                    session,
+                    text=text,
+                    source_text=source_text,
+                    translated_text=translated_text,
+                    caption_id=caption_id,
+                    segment_id=caption_id,
+                    phase=phase,
+                    is_final=is_final,
+                    timing=timing_payload,
+                    sync=sync_payload(session.sync_tracker.register_transcript_emit(timing.start_ts, now)),
+                    emitted_at=now,
+                    delta=delta,
+                    translation_started_at=translation_started_at,
+                    extra={"mode": REALTIME_TRANSCRIBER},
+                )
+                await send_transcript_payload(ws, payload)
                 if reset_caption:
                     reset_realtime_caption()
 
@@ -2250,12 +2439,14 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             for text, is_final in caption_state.append(delta):
                                 if not text:
                                     continue
-                                await send_realtime_caption(
-                                    text,
-                                    is_final=False,
-                                    delta=delta if not is_final else None,
-                                    phase="source-preview",
-                                )
+                                if session.show_source_first:
+                                    await send_realtime_caption(
+                                        text,
+                                        is_final=False,
+                                        delta=delta if not is_final else None,
+                                        phase="source-preview",
+                                        source_text=text,
+                                    )
                                 if not is_final or not session_partial_translation_enabled(session):
                                     continue
                                 src = session.source_lang if session.source_lang != "auto" else "auto"
@@ -2277,6 +2468,9 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                                         translated,
                                         is_final=True,
                                         phase="translated-partial",
+                                        source_text=text,
+                                        translated_text=translated,
+                                        translation_started_at=translation_started_at,
                                         reset_caption=True,
                                     )
                             schedule_idle_clear()
@@ -2287,6 +2481,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                                 is_final=is_final,
                                 delta=delta,
                                 phase="source-final" if is_final else "interim",
+                                source_text=text,
                                 reset_caption=is_final,
                             )
                         schedule_idle_clear()
@@ -2331,10 +2526,24 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                                 (translated_at - translation_started_at) * 1000,
                             )
                             if text:
-                                await send_realtime_caption(text, is_final=True, phase="translated-final", reset_caption=True)
+                                await send_realtime_caption(
+                                    text,
+                                    is_final=True,
+                                    phase="translated-final",
+                                    source_text=raw_text,
+                                    translated_text=text,
+                                    translation_started_at=translation_started_at,
+                                    reset_caption=True,
+                                )
                             realtime_translated_partials = 0
                         elif text:
-                            await send_realtime_caption(text, is_final=True, phase="source-final", reset_caption=True)
+                            await send_realtime_caption(
+                                text,
+                                is_final=True,
+                                phase="source-final",
+                                source_text=text,
+                                reset_caption=True,
+                            )
                         schedule_idle_clear()
                     elif event_type in ("session.created", "transcription_session.created", "transcription_session.updated"):
                         log.info("openai realtime event type=%s", event_type)
@@ -2508,6 +2717,13 @@ async def root():
             "vadSilenceMs": VAD_SILENCE_MS,
             "partialEmitEnabled": PARTIAL_EMIT_ENABLED,
             "translationFlushMs": TRANSLATION_FLUSH_MS,
+            "showSourceFirst": SHOW_SOURCE_FIRST,
+            "translationDisplayMode": (
+                TRANSLATION_DISPLAY_MODE
+                if TRANSLATION_DISPLAY_MODE in ALLOWED_TRANSLATION_DISPLAY_MODES
+                else "translation_replace"
+            ),
+            "translationGraceMs": TRANSLATION_GRACE_MS,
         },
         "api_key_configured": bool(api_key),
         "api_key_source": api_key_source,

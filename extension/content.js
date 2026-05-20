@@ -12,6 +12,9 @@ const MAX_SUBTITLE_DELAY_MS = 10000;
 const DEFAULT_SUBTITLE_DURATION_MS = 2600;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
+const DEFAULT_TRANSLATION_DISPLAY_MODE = 'translation_replace';
+const DEFAULT_TRANSLATION_GRACE_MS = 200;
+const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
 const MAX_SUBTITLE_QUEUE_ITEMS = 80;
 const EPOCH_SECONDS_THRESHOLD = 1000000000;
 const SUBTITLE_MODE_DELAYS_MS = {
@@ -277,6 +280,23 @@ function readableDurationMs(text) {
   return Math.max(subtitleDurationMs(), Math.min(MAX_SUBTITLE_DURATION_MS, estimated));
 }
 
+function showSourceFirstEnabled(msg) {
+  if (msg && typeof msg.showSourceFirst === 'boolean') return msg.showSourceFirst;
+  if (typeof currentSettings.showSourceFirst === 'boolean') return currentSettings.showSourceFirst;
+  return true;
+}
+
+function translationDisplayMode(msg) {
+  const mode = String((msg && msg.translationDisplayMode) || currentSettings.translationDisplayMode || DEFAULT_TRANSLATION_DISPLAY_MODE).toLowerCase();
+  return TRANSLATION_DISPLAY_MODES.has(mode) ? mode : DEFAULT_TRANSLATION_DISPLAY_MODE;
+}
+
+function translationGraceMs(msg) {
+  const raw = Number((msg && msg.translationGraceMs) ?? currentSettings.translationGraceMs);
+  if (!Number.isFinite(raw)) return DEFAULT_TRANSLATION_GRACE_MS;
+  return Math.max(0, Math.min(2000, raw));
+}
+
 function numberOrNull(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -308,6 +328,40 @@ function clearPendingSubtitle() {
   hideSubtitleText();
 }
 
+function subtitleStage(msg) {
+  const explicit = String((msg && msg.stage) || '').toLowerCase();
+  if (explicit === 'translation' || explicit === 'source') return explicit;
+  const phase = String((msg && msg.phase) || '').toLowerCase();
+  return phase.startsWith('translated') ? 'translation' : 'source';
+}
+
+function isTranslationItem(item) {
+  return !!item && item.stage === 'translation';
+}
+
+function isSourceItem(item) {
+  return !!item && item.stage !== 'translation';
+}
+
+function segmentGroupId(msg, segmentStartTs, segmentEndTs) {
+  if (msg.segmentId) return `segment:${msg.segmentId}`;
+  if (msg.captionId) return `caption:${msg.captionId}`;
+  if (msg.chunkId != null) return `chunk:${msg.chunkId}`;
+  return `time:${Math.round(segmentStartTs)}:${Math.round(segmentEndTs)}`;
+}
+
+function displayTextForMessage(msg, text) {
+  const stage = subtitleStage(msg);
+  const sourceText = normalizeSubtitleText(msg.sourceText || msg.raw || (stage === 'source' ? text : ''));
+  const translatedText = normalizeSubtitleText(msg.translatedText || (stage === 'translation' ? text : ''));
+
+  if (stage !== 'translation') return sourceText || normalizeSubtitleText(text);
+  if (translationDisplayMode(msg) === 'translation_dual' && sourceText && translatedText && sourceText !== translatedText) {
+    return `${sourceText}\n${translatedText}`;
+  }
+  return translatedText || sourceText || normalizeSubtitleText(text);
+}
+
 function sameSubtitle(a, b) {
   if (!a || !b) return false;
   if (a.captionId && b.captionId && a.captionId === b.captionId && a.cardIndex === b.cardIndex) return true;
@@ -328,7 +382,9 @@ function shouldIgnoreEmptyTranscript(msg) {
 }
 
 function splitLongText(text) {
-  const normalized = (text || '').replace(/\s+/g, ' ').trim();
+  const raw = (text || '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (raw.includes('\n') && raw.length <= MAX_VISIBLE_CHARS) return [raw];
+  const normalized = raw.replace(/\s+/g, ' ').trim();
   if (normalized.length <= TARGET_SUBTITLE_CARD_CHARS) return [normalized];
 
   const words = normalized.split(' ');
@@ -360,13 +416,10 @@ function splitLongText(text) {
   return cards.length ? cards : [normalized];
 }
 
-function buildSubtitleItems(text, segmentStartTs, segmentEndTs, receivedAt, receivedAtMs, chunkId, captionId, phase) {
+function buildSubtitleItems(text, segmentStartTs, segmentEndTs, receivedAt, receivedAtMs, msg) {
   const cards = splitLongText(text);
-  const groupId = captionId
-    ? `caption:${captionId}`
-    : chunkId != null
-    ? `chunk:${chunkId}`
-    : `time:${Math.round(segmentStartTs)}:${Math.round(segmentEndTs)}`;
+  const groupId = segmentGroupId(msg, segmentStartTs, segmentEndTs);
+  const stage = subtitleStage(msg);
   const readableDurations = cards.map(readableDurationMs);
   const sourceDuration = Math.max(segmentEndTs - segmentStartTs, subtitleDurationMs());
   const scheduleDuration = Math.max(sourceDuration, readableDurations.reduce((sum, value) => sum + value, 0));
@@ -384,9 +437,16 @@ function buildSubtitleItems(text, segmentStartTs, segmentEndTs, receivedAt, rece
       actualShowAt: null,
       receivedAt,
       receivedAtMs,
-      chunkId,
-      captionId,
-      phase,
+      chunkId: msg.chunkId,
+      captionId: msg.captionId,
+      segmentId: msg.segmentId,
+      phase: msg.phase,
+      stage,
+      sourceText: msg.sourceText || msg.raw || '',
+      translatedText: msg.translatedText || '',
+      transcriptEmittedAt: msg.transcriptEmittedAt,
+      translationEmittedAt: msg.translationEmittedAt,
+      transcriptToTranslationDelayMs: msg.transcriptToTranslationDelayMs,
       groupId,
       cardIndex: index,
       cardCount: cards.length,
@@ -399,18 +459,57 @@ function buildSubtitleItems(text, segmentStartTs, segmentEndTs, receivedAt, rece
 function enqueueSubtitleItems(items) {
   if (!items.length) return;
   const groupId = items[0].groupId;
-  subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
+  const incomingIsTranslation = isTranslationItem(items[0]);
+  const queuedMatches = subtitleQueue.filter((item) => item.groupId === groupId);
+  const matchedActive = !!(activeSubtitle && activeSubtitle.groupId === groupId);
+  const matchedQueued = queuedMatches.length > 0;
+
+  if (incomingIsTranslation) {
+    console.debug('[sub-stream-ai overlay] matched segment', {
+      segmentId: items[0].segmentId || groupId,
+      chunkId: items[0].chunkId,
+      matchedActive,
+      matchedQueued,
+      delayMs: items[0].transcriptToTranslationDelayMs,
+    });
+  }
 
   if (activeSubtitle && activeSubtitle.groupId === groupId) {
     const replacement = items.find((item) => item.cardIndex === activeSubtitle.cardIndex);
     if (replacement) {
-      replacement.actualShowAt = replacement.text === activeSubtitle.text && replacement.phase === activeSubtitle.phase
-        ? activeSubtitle.actualShowAt
-        : null;
-      activeSubtitle = replacement;
+      const sourceToTranslation = isSourceItem(activeSubtitle) && isTranslationItem(replacement);
+      const graceMs = translationGraceMs();
+      const visibleAt = activeSubtitle.actualShowAt || Math.max(Date.now(), activeSubtitle.segmentStartTs + subtitleOffsetMs());
+      const replaceAt = visibleAt + graceMs;
+      if (sourceToTranslation && showSourceFirstEnabled() && Date.now() < replaceAt) {
+        activeSubtitle.pendingReplacement = {
+          item: replacement,
+          replaceAt,
+        };
+      } else {
+        replacement.actualShowAt = replacement.text === activeSubtitle.text && replacement.phase === activeSubtitle.phase
+          ? activeSubtitle.actualShowAt
+          : activeSubtitle.actualShowAt;
+        activeSubtitle = replacement;
+      }
     }
+    subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
     subtitleQueue.push(...items.filter((item) => item.cardIndex > activeSubtitle.cardIndex));
+  } else if (incomingIsTranslation && queuedMatches.some(isSourceItem) && showSourceFirstEnabled() && translationGraceMs() > 0) {
+    subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
+    const sourceItems = queuedMatches.filter(isSourceItem);
+    for (const sourceItem of sourceItems) {
+      const replacement = items.find((item) => item.cardIndex === sourceItem.cardIndex) || items[0];
+      sourceItem.pendingReplacement = {
+        item: replacement,
+        replaceAt: sourceItem.segmentStartTs + subtitleOffsetMs() + translationGraceMs(),
+      };
+      subtitleQueue.push(sourceItem);
+    }
+    const sourceCardIndexes = new Set(sourceItems.map((item) => item.cardIndex));
+    subtitleQueue.push(...items.filter((item) => !sourceCardIndexes.has(item.cardIndex)));
   } else {
+    subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
     subtitleQueue.push(...items);
   }
 
@@ -453,6 +552,15 @@ function updateSubtitles() {
   }
 
   if (activeSubtitle) {
+    if (
+      activeSubtitle.pendingReplacement &&
+      now >= activeSubtitle.pendingReplacement.replaceAt
+    ) {
+      const replacement = activeSubtitle.pendingReplacement.item;
+      replacement.actualShowAt = activeSubtitle.actualShowAt;
+      activeSubtitle = replacement;
+    }
+
     const showAt = activeSubtitle.segmentStartTs + offsetMs;
     let hideAt = activeSubtitle.segmentEndTs + offsetMs;
     const canShow = now >= showAt;
@@ -503,6 +611,11 @@ function updateSubtitles() {
 function setTranscriptText(msg) {
   const text = (msg.text || '').trim();
   if (msg.sync) currentSyncMetrics = msg.sync;
+  const stage = subtitleStage(msg);
+
+  if (stage === 'source' && !showSourceFirstEnabled(msg)) {
+    return;
+  }
 
   if (!text) {
     if (shouldIgnoreEmptyTranscript(msg)) return;
@@ -523,15 +636,31 @@ function setTranscriptText(msg) {
     segmentEndTs = segmentStartTs + subtitleDurationMs();
   }
 
+  const displayText = displayTextForMessage(msg, text);
+  if (!displayText) return;
+
+  if (stage === 'translation') {
+    console.debug('[sub-stream-ai overlay] translation emitted', {
+      segmentId: msg.segmentId || msg.captionId || msg.chunkId,
+      chunkId: msg.chunkId,
+      delayMs: msg.transcriptToTranslationDelayMs,
+      phase: msg.phase,
+    });
+  } else {
+    console.debug('[sub-stream-ai overlay] transcript emitted', {
+      segmentId: msg.segmentId || msg.captionId || msg.chunkId,
+      chunkId: msg.chunkId,
+      phase: msg.phase,
+    });
+  }
+
   enqueueSubtitleItems(buildSubtitleItems(
-    text,
+    displayText,
     segmentStartTs,
     segmentEndTs,
     receivedAt,
     receivedAtMs,
-    msg.chunkId,
-    msg.captionId,
-    msg.phase
+    msg
   ));
 }
 

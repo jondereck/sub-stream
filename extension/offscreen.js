@@ -25,7 +25,10 @@ const DEFAULT_CHUNK_DURATION_MS = 650;
 const DEFAULT_MAX_BUFFER_MS = 900;
 const DEFAULT_VAD_SILENCE_MS = 350;
 const DEFAULT_TRANSLATION_FLUSH_MS = 450;
+const DEFAULT_TRANSLATION_DISPLAY_MODE = 'translation_replace';
+const DEFAULT_TRANSLATION_GRACE_MS = 200;
 const SUBTITLE_MODES = new Set(['fast', 'balanced', 'accurate']);
+const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
 const ACTIVE_AUDIO_RMS = 0.005;
 let chunkBuffer = new Float32Array(0);
 let chunkBufferStartTs = null;
@@ -84,7 +87,7 @@ function currentSubtitleMode() {
 }
 
 function currentTranslator() {
-  return currentTranscriber() === 'local' ? 'local' : 'openai';
+  return 'openai';
 }
 
 function isRealtimeMode() {
@@ -117,6 +120,11 @@ function partialEmitEnabled() {
   return currentSubtitleMode() !== 'accurate';
 }
 
+function currentTranslationDisplayMode() {
+  const mode = String((settings && settings.translationDisplayMode) || DEFAULT_TRANSLATION_DISPLAY_MODE).toLowerCase();
+  return TRANSLATION_DISPLAY_MODES.has(mode) ? mode : DEFAULT_TRANSLATION_DISPLAY_MODE;
+}
+
 function targetFrameSamples() {
   const maxBufferMs = clampLatencyMs(settings && settings.maxBufferMs, 250, 10000, DEFAULT_MAX_BUFFER_MS);
   const seconds = isRealtimeMode()
@@ -141,7 +149,10 @@ function buildConfigMessage() {
     maxBufferMs: clampLatencyMs(settings && settings.maxBufferMs, 250, 10000, DEFAULT_MAX_BUFFER_MS),
     vadSilenceMs: clampLatencyMs(settings && settings.vadSilenceMs, 150, 2000, DEFAULT_VAD_SILENCE_MS),
     partialEmitEnabled: partialEmitEnabled(),
-    translationFlushMs: clampLatencyMs(settings && settings.translationFlushMs, 150, 3000, DEFAULT_TRANSLATION_FLUSH_MS)
+    translationFlushMs: clampLatencyMs(settings && settings.translationFlushMs, 150, 3000, DEFAULT_TRANSLATION_FLUSH_MS),
+    showSourceFirst: settings && typeof settings.showSourceFirst === 'boolean' ? settings.showSourceFirst : true,
+    translationDisplayMode: currentTranslationDisplayMode(),
+    translationGraceMs: clampLatencyMs(settings && settings.translationGraceMs, 0, 2000, DEFAULT_TRANSLATION_GRACE_MS)
   };
 }
 
@@ -211,13 +222,23 @@ function openSocket() {
           delta: data.delta,
           isFinal: !!data.isFinal,
           mode: data.mode,
+          stage: data.stage,
+          sourceText: data.sourceText,
+          translatedText: data.translatedText,
           captionId: data.captionId,
+          segmentId: data.segmentId,
           phase: data.phase,
           chunkId: data.chunkId,
           receivedAt: data.receivedAt,
           segmentStartTs: data.segmentStartTs,
           segmentEndTs: data.segmentEndTs,
           transcriptEmittedAt: data.transcriptEmittedAt,
+          translationStartedAt: data.translationStartedAt,
+          translationEmittedAt: data.translationEmittedAt,
+          transcriptToTranslationDelayMs: data.transcriptToTranslationDelayMs,
+          showSourceFirst: data.showSourceFirst,
+          translationDisplayMode: data.translationDisplayMode,
+          translationGraceMs: data.translationGraceMs,
           sync: data.sync
         });
       } else if (data.type === 'error') {

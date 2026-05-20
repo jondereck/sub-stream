@@ -264,6 +264,9 @@ class BackendManager:
             ("SUBSTREAM_VAD_SILENCE_MS", "vadSilenceMs"),
             ("SUBSTREAM_PARTIAL_EMIT_ENABLED", "partialEmitEnabled"),
             ("SUBSTREAM_TRANSLATION_FLUSH_MS", "translationFlushMs"),
+            ("SUBSTREAM_SHOW_SOURCE_FIRST", "showSourceFirst"),
+            ("SUBSTREAM_TRANSLATION_DISPLAY_MODE", "translationDisplayMode"),
+            ("SUBSTREAM_TRANSLATION_GRACE_MS", "translationGraceMs"),
         ):
             v = cfg.get(k_cfg)
             if k_cfg == "transcriber" and normalize_config_value(v) == "openai":

@@ -69,5 +69,11 @@ VAD_SILENCE_MS = int(os.getenv("SUBSTREAM_VAD_SILENCE_MS", "350"))
 PARTIAL_EMIT_ENABLED = os.getenv("SUBSTREAM_PARTIAL_EMIT_ENABLED", "true").lower() in ("1", "true", "yes")
 TRANSLATION_FLUSH_MS = int(os.getenv("SUBSTREAM_TRANSLATION_FLUSH_MS", "450"))
 
+# Two-stage subtitle display. Source transcript is shown first by default,
+# then the matching translation replaces it or appears as a second line.
+SHOW_SOURCE_FIRST = os.getenv("SUBSTREAM_SHOW_SOURCE_FIRST", "true").lower() in ("1", "true", "yes")
+TRANSLATION_DISPLAY_MODE = os.getenv("SUBSTREAM_TRANSLATION_DISPLAY_MODE", "translation_replace").strip().lower()
+TRANSLATION_GRACE_MS = int(os.getenv("SUBSTREAM_TRANSLATION_GRACE_MS", "200"))
+
 # Optional shared token for Android clients. Leave empty for local/dev use.
 MOBILE_TOKEN = os.getenv("SUBSTREAM_MOBILE_TOKEN", "")

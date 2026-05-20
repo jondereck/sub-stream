@@ -113,7 +113,7 @@ function engineForSettings(settings) {
 }
 
 function translatorForSettings(settings) {
-  return settings && settings.transcriber === 'local' ? 'local' : 'openai';
+  return 'openai';
 }
 
 function calibrationKey(settings) {
@@ -469,6 +469,9 @@ async function ensureBackend(settings) {
     vadSilenceMs: settings.vadSilenceMs || undefined,
     partialEmitEnabled: typeof settings.partialEmitEnabled === 'boolean' ? settings.partialEmitEnabled : undefined,
     translationFlushMs: settings.translationFlushMs || undefined,
+    showSourceFirst: typeof settings.showSourceFirst === 'boolean' ? settings.showSourceFirst : undefined,
+    translationDisplayMode: settings.translationDisplayMode || undefined,
+    translationGraceMs: settings.translationGraceMs || undefined,
   };
   backendState = 'starting';
   try {
@@ -747,13 +750,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 delta: msg.delta,
                 isFinal: msg.isFinal,
                 mode: msg.mode,
+                stage: msg.stage,
+                sourceText: msg.sourceText,
+                translatedText: msg.translatedText,
                 captionId: msg.captionId,
+                segmentId: msg.segmentId,
                 phase: msg.phase,
                 chunkId: msg.chunkId,
                 receivedAt: msg.receivedAt,
                 receivedAtMs,
                 segmentStartTs: msg.segmentStartTs,
                 segmentEndTs: msg.segmentEndTs,
+                transcriptEmittedAt: msg.transcriptEmittedAt,
+                translationStartedAt: msg.translationStartedAt,
+                translationEmittedAt: msg.translationEmittedAt,
+                transcriptToTranslationDelayMs: msg.transcriptToTranslationDelayMs,
+                showSourceFirst: msg.showSourceFirst,
+                translationDisplayMode: msg.translationDisplayMode,
+                translationGraceMs: msg.translationGraceMs,
                 sync: nextSyncMetrics,
                 effectiveOffsetMs: Math.round(nextSyncMetrics.effectiveOffsetS * 1000)
               });

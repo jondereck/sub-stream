@@ -5,6 +5,7 @@ import ai.substream.android.data.EngineMode
 import ai.substream.android.data.OverlayPosition
 import ai.substream.android.data.SettingsStore
 import ai.substream.android.data.SubtitleMode
+import ai.substream.android.data.TranslationDisplayMode
 import ai.substream.android.service.CaptureService
 import android.Manifest
 import android.app.Activity
@@ -280,6 +281,32 @@ private fun SubStreamScreen(
                     Text(
                         "Fast updates sooner. Balanced adds a small subtitle delay. Accurate waits for cleaner context.",
                         style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                SettingsCard("Translation Display") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EngineChip("Replace", settings.translationDisplayMode == TranslationDisplayMode.TranslationReplace) {
+                            onSettingsChange(settings.copy(translationDisplayMode = TranslationDisplayMode.TranslationReplace))
+                        }
+                        EngineChip("Dual", settings.translationDisplayMode == TranslationDisplayMode.TranslationDual) {
+                            onSettingsChange(settings.copy(translationDisplayMode = TranslationDisplayMode.TranslationDual))
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EngineChip("Source first", settings.showSourceFirst) {
+                            onSettingsChange(settings.copy(showSourceFirst = !settings.showSourceFirst))
+                        }
+                    }
+                    Text("Grace: ${settings.translationGraceMs}ms")
+                    Slider(
+                        value = settings.translationGraceMs.toFloat(),
+                        onValueChange = {
+                            val rounded = (it / 50f).toInt() * 50L
+                            onSettingsChange(settings.copy(translationGraceMs = rounded.coerceIn(0L, 2_000L)))
+                        },
+                        valueRange = 0f..2_000f,
+                        steps = 39,
                     )
                 }
 
