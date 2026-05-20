@@ -57,7 +57,11 @@ function currentOverlayHost() {
   // When something is in fullscreen, browsers paint a "top layer" above
   // everything else and only descendants of the fullscreen element are visible.
   // Re-parent the overlay there so subtitles survive fullscreen.
-  return document.fullscreenElement || document.webkitFullscreenElement || document.documentElement;
+  const fs = fullscreenElement();
+  if (fs && fs.tagName && fs.tagName.toLowerCase() === 'video') {
+    return document.documentElement;
+  }
+  return fs || document.documentElement;
 }
 
 function fullscreenElement() {
@@ -67,6 +71,13 @@ function fullscreenElement() {
 function shouldUseNativeVideoSubtitle() {
   const fs = fullscreenElement();
   return !!(fs && fs.tagName && fs.tagName.toLowerCase() === 'video');
+}
+
+function effectiveSubtitlePosition() {
+  // Fullscreen video controls and site overlays often cover the bottom edge.
+  // Keep fullscreen captions at the top even when the normal page setting is
+  // bottom.
+  return fullscreenElement() ? 'top' : (currentSettings.position || 'bottom');
 }
 
 function ensureOverlay(settings) {
@@ -88,6 +99,7 @@ function ensureOverlay(settings) {
   textEl.setAttribute('dir', 'auto');
   overlayEl.appendChild(textEl);
   currentOverlayHost().appendChild(overlayEl);
+  document.documentElement.classList.add('kami-subs-active');
   applySettings(settings || {});
   return overlayEl;
 }
@@ -138,10 +150,11 @@ function positionOverlayOverVideo() {
   overlayEl.style.left = '50%';
   overlayEl.style.transform = 'translateX(-50%)';
   overlayEl.style.width = 'min(86vw, 1200px)';
-  if ((overlayEl.dataset.position || 'bottom') === 'top') {
+  const position = effectiveSubtitlePosition();
+  if (position === 'top') {
     overlayEl.style.top = '6vh';
     overlayEl.style.bottom = '';
-  } else if (overlayEl.dataset.position === 'middle') {
+  } else if (position === 'middle') {
     overlayEl.style.top = '50%';
     overlayEl.style.bottom = '';
     overlayEl.style.transform = 'translate(-50%, -50%)';
@@ -159,6 +172,11 @@ function trackVideo() {
     nativeSubtitleTrack = null;
   }
   if (resizeObserver) try { resizeObserver.disconnect(); } catch (e) {}
+  if (scrollHandler) {
+    window.removeEventListener('scroll', scrollHandler);
+    window.removeEventListener('resize', scrollHandler);
+    scrollHandler = null;
+  }
   if (window.ResizeObserver && trackedVideo) {
     resizeObserver = new ResizeObserver(() => positionOverlayOverVideo());
     resizeObserver.observe(trackedVideo);
@@ -222,7 +240,10 @@ function showNativeSubtitle(text) {
   if (!Cue) return;
   try {
     nativeSubtitleCue = new Cue(Math.max(0, now - 0.05), now + 60, cleanText);
-    nativeSubtitleCue.line = 'auto';
+    if ('snapToLines' in nativeSubtitleCue) nativeSubtitleCue.snapToLines = false;
+    nativeSubtitleCue.line = nativeCueLinePercent();
+    if ('position' in nativeSubtitleCue) nativeSubtitleCue.position = 50;
+    if ('size' in nativeSubtitleCue) nativeSubtitleCue.size = 90;
     nativeSubtitleCue.align = 'center';
     nativeSubtitleTrack.addCue(nativeSubtitleCue);
     nativeSubtitleText = cleanText;
@@ -232,10 +253,18 @@ function showNativeSubtitle(text) {
   }
 }
 
+function nativeCueLinePercent() {
+  const position = effectiveSubtitlePosition();
+  if (position === 'middle') return 50;
+  if (position === 'top') return 8;
+  return 90;
+}
+
 function mount(settings, sync) {
   if (sync) currentSyncMetrics = sync;
-  ensureOverlay(settings);
   trackVideo();
+  if (!trackedVideo) return;
+  ensureOverlay(settings);
   startRenderLoop();
 }
 
@@ -247,6 +276,7 @@ function unmount() {
   if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
   untrackVideo();
   document.querySelectorAll('#' + OVERLAY_ID).forEach(n => n.remove());
+  document.documentElement.classList.remove('kami-subs-active');
   overlayEl = null;
   textEl = null;
 }
