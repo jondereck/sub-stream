@@ -143,6 +143,11 @@ REALTIME_LATENCY_PROFILES = {
     "accurate": {"phrase_chars": 92, "idle_s": 1.2},
 }
 REALTIME_LATENCY_ALIASES = {"stable": "accurate"}
+PARTIAL_TRANSLATION_BY_LATENCY = {
+    "fast": True,
+    "balanced": True,
+    "accurate": False,
+}
 ALLOWED_TRANSCRIBERS = {"local", REALTIME_TRANSCRIBER, OPENAI_CHUNKED_TRANSCRIBER}
 ALLOWED_TRANSLATORS = {"openai", "gpt", "google", "local", "none"}
 ALLOWED_TARGET_LANGS = {
@@ -1445,6 +1450,11 @@ def should_translate_session(session: Session) -> bool:
     return session.task == "translate" and session.source_lang != session.target_lang
 
 
+def session_partial_translation_enabled(session: Session) -> bool:
+    default_for_latency = PARTIAL_TRANSLATION_BY_LATENCY.get(session.realtime_latency, True)
+    return bool(session.partial_emit_enabled and default_for_latency)
+
+
 def safe_sample_rate(value, default: int) -> int:
     try:
         sample_rate = int(value)
@@ -2246,7 +2256,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                                     delta=delta if not is_final else None,
                                     phase="source-preview",
                                 )
-                                if not is_final or not session.partial_emit_enabled:
+                                if not is_final or not session_partial_translation_enabled(session):
                                     continue
                                 src = session.source_lang if session.source_lang != "auto" else "auto"
                                 translation_started_at = time.time()

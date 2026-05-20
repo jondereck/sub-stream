@@ -4,6 +4,7 @@ import ai.substream.android.data.AppSettings
 import ai.substream.android.data.EngineMode
 import ai.substream.android.data.OverlayPosition
 import ai.substream.android.data.SettingsStore
+import ai.substream.android.data.SubtitleMode
 import ai.substream.android.service.CaptureService
 import android.Manifest
 import android.app.Activity
@@ -20,6 +21,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -261,6 +263,26 @@ private fun SubStreamScreen(
                     )
                 }
 
+                SettingsCard("Subtitle Mode") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EngineChip("Fast", settings.subtitleMode == SubtitleMode.Fast) {
+                            onSettingsChange(settings.copy(subtitleMode = SubtitleMode.Fast))
+                        }
+                        EngineChip("Balanced", settings.subtitleMode == SubtitleMode.Balanced) {
+                            onSettingsChange(settings.copy(subtitleMode = SubtitleMode.Balanced))
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EngineChip("Accurate", settings.subtitleMode == SubtitleMode.Accurate) {
+                            onSettingsChange(settings.copy(subtitleMode = SubtitleMode.Accurate))
+                        }
+                    }
+                    Text(
+                        "Fast updates sooner. Balanced adds a small subtitle delay. Accurate waits for cleaner context.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
                 SettingsCard("Overlay") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         EngineChip("Bottom", settings.overlayPosition == OverlayPosition.Bottom) {
@@ -308,7 +330,7 @@ private fun StatusCard(
 }
 
 @Composable
-private fun SettingsCard(title: String, content: @Composable Column.() -> Unit) {
+private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth(),

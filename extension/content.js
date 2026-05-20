@@ -14,6 +14,11 @@ const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
 const MAX_SUBTITLE_QUEUE_ITEMS = 80;
 const EPOCH_SECONDS_THRESHOLD = 1000000000;
+const SUBTITLE_MODE_DELAYS_MS = {
+  fast: 0,
+  balanced: 500,
+  accurate: 900,
+};
 
 let overlayEl = null;
 let textEl = null;
@@ -246,8 +251,18 @@ function unmount() {
 function subtitleOffsetMs() {
   const autoOffsetS = (currentSyncMetrics && Number(currentSyncMetrics.autoOffsetS)) || 0;
   const manualOffsetMs = Number(currentSettings.subtitleDelayMs) || 0;
-  const effectiveMs = (autoOffsetS * 1000) + manualOffsetMs;
+  const effectiveMs = (autoOffsetS * 1000) + subtitleModeDelayMs() + manualOffsetMs;
   return Math.max(MIN_SUBTITLE_DELAY_MS, Math.min(MAX_SUBTITLE_DELAY_MS, effectiveMs));
+}
+
+function subtitleMode() {
+  const mode = String(currentSettings.realtimeLatency || 'balanced').toLowerCase();
+  if (mode === 'stable') return 'accurate';
+  return Object.prototype.hasOwnProperty.call(SUBTITLE_MODE_DELAYS_MS, mode) ? mode : 'balanced';
+}
+
+function subtitleModeDelayMs() {
+  return SUBTITLE_MODE_DELAYS_MS[subtitleMode()] || 0;
 }
 
 function subtitleDurationMs() {

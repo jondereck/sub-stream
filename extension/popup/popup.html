@@ -172,13 +172,13 @@
           <input type="text" id="backendUrl" value="ws://127.0.0.1:8765/ws" />
         </label>
         <label>
-          Realtime latency
+          Subtitle mode
           <select id="realtimeLatency">
             <option value="fast">Fast</option>
             <option value="balanced" selected>Balanced</option>
-            <option value="stable">Stable</option>
+            <option value="accurate">Accurate</option>
           </select>
-          <span class="field-help">Fast shows captions sooner. Stable waits longer for cleaner phrase breaks.</span>
+          <span class="field-help">Fast is immediate, Balanced adds a small delay, Accurate waits for cleaner context.</span>
         </label>
         <label>
           Audio chunk window (ms)
@@ -196,10 +196,10 @@
           <span class="field-help">Lower ends speech segments faster. Higher waits for longer silence before finalizing.</span>
         </label>
         <label class="checkbox-setting">
-          <input type="checkbox" id="partialEmitEnabled" checked />
-          <span>Emit stable partial subtitles sooner</span>
+          <input type="checkbox" id="partialEmitEnabled" checked disabled />
+          <span>Partial translation updates</span>
         </label>
-        <span class="field-help">On starts translation from stable partial phrases. Off waits for more finalized text.</span>
+        <span class="field-help">Controlled by Subtitle mode: Fast and Balanced enable it, Accurate waits longer.</span>
         <label>
           Translation flush wait (ms)
           <input type="number" id="translationFlushMs" min="150" max="3000" step="50" value="450" />

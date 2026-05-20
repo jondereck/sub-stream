@@ -33,6 +33,8 @@ class CloudRealtimeClient(
                     .put("sourceLang", settings.sourceLang)
                     .put("targetLang", settings.targetLang)
                     .put("task", "translate")
+                    .put("realtimeLatency", settings.subtitleMode.wireValue)
+                    .put("partialEmitEnabled", settings.subtitleMode.partialTranslationEnabled)
                     .put("transcriber", "openai-realtime")
                 webSocket.send(config.toString())
                 onStatus("Cloud connected")

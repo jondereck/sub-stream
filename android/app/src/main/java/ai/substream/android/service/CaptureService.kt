@@ -5,6 +5,7 @@ import ai.substream.android.audio.PlaybackAudioCapture
 import ai.substream.android.data.AppSettings
 import ai.substream.android.data.EngineMode
 import ai.substream.android.data.OverlayPosition
+import ai.substream.android.data.SubtitleMode
 import ai.substream.android.engine.LocalWhisperEngine
 import ai.substream.android.net.CloudRealtimeClient
 import ai.substream.android.overlay.CaptionOverlay
@@ -36,6 +37,8 @@ class CaptureService : Service() {
     private var overlay: CaptionOverlay? = null
     private var cloudClient: CloudRealtimeClient? = null
     private var localEngine: LocalWhisperEngine? = null
+    private var activeSettings: AppSettings? = null
+    private var pendingCaptionUpdate: Runnable? = null
     private var lastSilentStatusAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -71,6 +74,7 @@ class CaptureService : Service() {
         }
 
         val settings = intent.toSettings()
+        activeSettings = settings
         overlay = runCatching {
             CaptionOverlay(this).also { it.show(settings) }
         }.getOrElse {
@@ -149,6 +153,9 @@ class CaptureService : Service() {
         cloudClient = null
         localEngine?.close()
         localEngine = null
+        pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
+        pendingCaptionUpdate = null
+        activeSettings = null
         if (stopProjection) {
             projection?.runCatching { stop() }
         }
@@ -167,9 +174,13 @@ class CaptureService : Service() {
     }
 
     private fun updateCaption(text: String) {
-        mainHandler.post {
+        val delayMs = activeSettings?.subtitleMode?.captionDelayMs() ?: 0L
+        pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
+        val update = Runnable {
             overlay?.updateCaption(text)
         }
+        pendingCaptionUpdate = update
+        mainHandler.postDelayed(update, delayMs)
     }
 
     private fun updateStatus(status: String) {
@@ -207,6 +218,7 @@ class CaptureService : Service() {
             targetLang = getStringExtra(EXTRA_TARGET_LANG) ?: "en",
             overlayPosition = OverlayPosition.fromWire(getStringExtra(EXTRA_OVERLAY_POSITION)),
             fontSizeSp = getIntExtra(EXTRA_FONT_SIZE, 28),
+            subtitleMode = SubtitleMode.fromWire(getStringExtra(EXTRA_SUBTITLE_MODE)),
         )
     }
 
@@ -237,6 +249,7 @@ class CaptureService : Service() {
         private const val EXTRA_TARGET_LANG = "target_lang"
         private const val EXTRA_OVERLAY_POSITION = "overlay_position"
         private const val EXTRA_FONT_SIZE = "font_size"
+        private const val EXTRA_SUBTITLE_MODE = "subtitle_mode"
 
         fun ensureNotificationChannel(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -268,11 +281,20 @@ class CaptureService : Service() {
                 .putExtra(EXTRA_TARGET_LANG, settings.targetLang)
                 .putExtra(EXTRA_OVERLAY_POSITION, settings.overlayPosition.wireValue)
                 .putExtra(EXTRA_FONT_SIZE, settings.fontSizeSp)
+                .putExtra(EXTRA_SUBTITLE_MODE, settings.subtitleMode.wireValue)
             ContextCompat.startForegroundService(context, intent)
         }
 
         fun stop(context: Context) {
             context.startService(Intent(context, CaptureService::class.java).setAction(ACTION_STOP))
         }
+    }
+}
+
+private fun SubtitleMode.captionDelayMs(): Long {
+    return when (this) {
+        SubtitleMode.Fast -> 0L
+        SubtitleMode.Balanced -> 500L
+        SubtitleMode.Accurate -> 900L
     }
 }

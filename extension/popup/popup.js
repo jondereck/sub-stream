@@ -47,7 +47,7 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 12,
+  settingsVersion: 13,
   sourceLang: 'auto',
   targetLang: 'en',
   fontSize: 28,
@@ -66,6 +66,30 @@ const DEFAULTS = {
   task: 'translate',
   model: 'base',
   device: 'cpu',
+};
+
+const SUBTITLE_MODE_PROFILES = {
+  fast: {
+    chunkDurationMs: 450,
+    maxBufferMs: 650,
+    vadSilenceMs: 250,
+    partialEmitEnabled: true,
+    translationFlushMs: 250,
+  },
+  balanced: {
+    chunkDurationMs: 650,
+    maxBufferMs: 900,
+    vadSilenceMs: 350,
+    partialEmitEnabled: true,
+    translationFlushMs: 450,
+  },
+  accurate: {
+    chunkDurationMs: 950,
+    maxBufferMs: 1300,
+    vadSilenceMs: 800,
+    partialEmitEnabled: false,
+    translationFlushMs: 900,
+  },
 };
 
 const LIVE_SETTINGS = new Set([
@@ -118,6 +142,28 @@ function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'
 
 function translatorForTranscriber(transcriber) {
   return transcriber === 'local' ? 'local' : 'openai';
+}
+
+function normalizeSubtitleMode(value) {
+  const mode = String(value || DEFAULTS.realtimeLatency).trim().toLowerCase();
+  if (mode === 'stable') return 'accurate';
+  return Object.prototype.hasOwnProperty.call(SUBTITLE_MODE_PROFILES, mode)
+    ? mode
+    : DEFAULTS.realtimeLatency;
+}
+
+function subtitleModeProfile(mode) {
+  return SUBTITLE_MODE_PROFILES[normalizeSubtitleMode(mode)] || SUBTITLE_MODE_PROFILES.balanced;
+}
+
+function applySubtitleModeProfileToForm(mode) {
+  const profile = subtitleModeProfile(mode);
+  els.chunkDurationMs.value = profile.chunkDurationMs;
+  els.maxBufferMs.value = profile.maxBufferMs;
+  els.vadSilenceMs.value = profile.vadSilenceMs;
+  els.partialEmitEnabled.checked = profile.partialEmitEnabled;
+  els.partialEmitEnabled.disabled = true;
+  els.translationFlushMs.value = profile.translationFlushMs;
 }
 
 function errorMessage(err, fallback = 'Something went wrong.') {
@@ -242,9 +288,7 @@ async function loadSettings() {
     s.transcriber = 'local';
   }
   s.translator = translatorForTranscriber(s.transcriber);
-  if (!['fast', 'balanced', 'stable'].includes(s.realtimeLatency)) {
-    s.realtimeLatency = DEFAULTS.realtimeLatency;
-  }
+  s.realtimeLatency = normalizeSubtitleMode(s.realtimeLatency);
   if (!Object.prototype.hasOwnProperty.call(saved, 'subtitleDelayMs') && Number.isFinite(Number(saved.audioDelayMs))) {
     s.subtitleDelayMs = saved.audioDelayMs;
   }
@@ -256,10 +300,13 @@ async function loadSettings() {
   if (!['manual', 'auto'].includes(s.syncMode)) {
     s.syncMode = DEFAULTS.syncMode;
   }
+  if ((saved.settingsVersion || 0) < DEFAULTS.settingsVersion) {
+    Object.assign(s, subtitleModeProfile(s.realtimeLatency));
+  }
   s.chunkDurationMs = clampMs(s.chunkDurationMs, 250, 5000, DEFAULTS.chunkDurationMs);
   s.maxBufferMs = clampMs(s.maxBufferMs, 250, 10000, DEFAULTS.maxBufferMs);
   s.vadSilenceMs = clampMs(s.vadSilenceMs, 150, 2000, DEFAULTS.vadSilenceMs);
-  s.partialEmitEnabled = !!s.partialEmitEnabled;
+  s.partialEmitEnabled = subtitleModeProfile(s.realtimeLatency).partialEmitEnabled;
   s.translationFlushMs = clampMs(s.translationFlushMs, 150, 3000, DEFAULTS.translationFlushMs);
   s.settingsVersion = DEFAULTS.settingsVersion;
   els.sourceLang.value = s.sourceLang;
@@ -279,6 +326,7 @@ async function loadSettings() {
   els.maxBufferMs.value = s.maxBufferMs;
   els.vadSilenceMs.value = s.vadSilenceMs;
   els.partialEmitEnabled.checked = s.partialEmitEnabled;
+  els.partialEmitEnabled.disabled = true;
   els.translationFlushMs.value = s.translationFlushMs;
   els.model.value = s.model;
   els.device.value = s.device;
@@ -288,6 +336,8 @@ async function loadSettings() {
 
 function readSettingsFromForm() {
   const device = els.device.value;
+  const realtimeLatency = normalizeSubtitleMode(els.realtimeLatency.value);
+  const modeProfile = subtitleModeProfile(realtimeLatency);
   return {
     settingsVersion: DEFAULTS.settingsVersion,
     sourceLang: els.sourceLang.value,
@@ -300,11 +350,11 @@ function readSettingsFromForm() {
     transcriber: els.transcriber.value,
     translator: translatorForTranscriber(els.transcriber.value),
     backendUrl: els.backendUrl.value.trim() || DEFAULTS.backendUrl,
-    realtimeLatency: els.realtimeLatency.value,
+    realtimeLatency,
     chunkDurationMs: clampMs(els.chunkDurationMs.value, 250, 5000, DEFAULTS.chunkDurationMs),
     maxBufferMs: clampMs(els.maxBufferMs.value, 250, 10000, DEFAULTS.maxBufferMs),
     vadSilenceMs: clampMs(els.vadSilenceMs.value, 150, 2000, DEFAULTS.vadSilenceMs),
-    partialEmitEnabled: els.partialEmitEnabled.checked,
+    partialEmitEnabled: modeProfile.partialEmitEnabled,
     translationFlushMs: clampMs(els.translationFlushMs.value, 150, 3000, DEFAULTS.translationFlushMs),
     task: 'translate',
     model: els.model.value,
@@ -408,7 +458,7 @@ function setToggleLoading(text, stopMode = false) {
 
 function setControlsDisabled(disabled) {
   SETTING_FIELDS.forEach((key) => {
-    if (els[key]) els[key].disabled = disabled;
+    if (els[key]) els[key].disabled = key === 'partialEmitEnabled' ? true : disabled;
   });
   els.resetSubtitleDelay.disabled = disabled;
 }
@@ -663,6 +713,8 @@ els.position.addEventListener('change', () => {
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
 els.realtimeLatency.addEventListener('change', () => {
+  els.realtimeLatency.value = normalizeSubtitleMode(els.realtimeLatency.value);
+  applySubtitleModeProfileToForm(els.realtimeLatency.value);
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
 ['chunkDurationMs', 'maxBufferMs', 'vadSilenceMs', 'translationFlushMs'].forEach((key) => {

@@ -20,6 +20,7 @@ class SettingsStore(private val context: Context) {
         val TargetLang = stringPreferencesKey("target_lang")
         val OverlayPosition = stringPreferencesKey("overlay_position")
         val FontSize = intPreferencesKey("font_size")
+        val SubtitleMode = stringPreferencesKey("subtitle_mode")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
@@ -32,6 +33,7 @@ class SettingsStore(private val context: Context) {
             targetLang = prefs[Keys.TargetLang] ?: "en",
             overlayPosition = OverlayPosition.fromWire(prefs[Keys.OverlayPosition]),
             fontSizeSp = prefs[Keys.FontSize] ?: 28,
+            subtitleMode = SubtitleMode.fromWire(prefs[Keys.SubtitleMode]),
         )
     }
 
@@ -45,6 +47,7 @@ class SettingsStore(private val context: Context) {
             prefs[Keys.TargetLang] = settings.targetLang
             prefs[Keys.OverlayPosition] = settings.overlayPosition.wireValue
             prefs[Keys.FontSize] = settings.fontSizeSp
+            prefs[Keys.SubtitleMode] = settings.subtitleMode.wireValue
         }
     }
 }

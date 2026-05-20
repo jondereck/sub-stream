@@ -96,6 +96,7 @@ class LocalWhisperEngine(
                 val caption = if (translateToEnglish) {
                     raw
                 } else {
+                    onCaption(raw)
                     onStatus("Translating through backend")
                     translator.translate(raw)
                 }

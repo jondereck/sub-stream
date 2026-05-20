@@ -25,6 +25,7 @@ const DEFAULT_CHUNK_DURATION_MS = 650;
 const DEFAULT_MAX_BUFFER_MS = 900;
 const DEFAULT_VAD_SILENCE_MS = 350;
 const DEFAULT_TRANSLATION_FLUSH_MS = 450;
+const SUBTITLE_MODES = new Set(['fast', 'balanced', 'accurate']);
 const ACTIVE_AUDIO_RMS = 0.005;
 let chunkBuffer = new Float32Array(0);
 let chunkBufferStartTs = null;
@@ -76,6 +77,12 @@ function currentTranscriber() {
   return (settings && settings.transcriber) || 'local';
 }
 
+function currentSubtitleMode() {
+  const mode = String((settings && settings.realtimeLatency) || 'balanced').toLowerCase();
+  if (mode === 'stable') return 'accurate';
+  return SUBTITLE_MODES.has(mode) ? mode : 'balanced';
+}
+
 function currentTranslator() {
   return currentTranscriber() === 'local' ? 'local' : 'openai';
 }
@@ -107,9 +114,7 @@ function clampLatencyMs(value, min, max, fallback) {
 }
 
 function partialEmitEnabled() {
-  return settings && Object.prototype.hasOwnProperty.call(settings, 'partialEmitEnabled')
-    ? !!settings.partialEmitEnabled
-    : true;
+  return currentSubtitleMode() !== 'accurate';
 }
 
 function targetFrameSamples() {
@@ -126,7 +131,7 @@ function buildConfigMessage() {
     sampleRate: targetSampleRate(),
     sourceLang: (settings && settings.sourceLang) || 'auto',
     targetLang: (settings && settings.targetLang) || 'ar',
-    realtimeLatency: (settings && settings.realtimeLatency) || 'balanced',
+    realtimeLatency: currentSubtitleMode(),
     task: (settings && settings.task) || 'translate',
     translator: currentTranslator(),
     transcriber: currentTranscriber(),

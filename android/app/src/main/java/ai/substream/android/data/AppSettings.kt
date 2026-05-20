@@ -18,6 +18,23 @@ enum class OverlayPosition(val wireValue: String) {
     }
 }
 
+enum class SubtitleMode(val wireValue: String) {
+    Fast("fast"),
+    Balanced("balanced"),
+    Accurate("accurate");
+
+    val partialTranslationEnabled: Boolean
+        get() = this != Accurate
+
+    companion object {
+        fun fromWire(value: String?) = when (value?.lowercase()) {
+            "fast" -> Fast
+            "stable", "accurate" -> Accurate
+            else -> Balanced
+        }
+    }
+}
+
 data class AppSettings(
     val engine: EngineMode = EngineMode.CloudRealtime,
     val backendUrl: String = "ws://192.168.1.10:8765/ws",
@@ -27,6 +44,7 @@ data class AppSettings(
     val targetLang: String = "en",
     val overlayPosition: OverlayPosition = OverlayPosition.Bottom,
     val fontSizeSp: Int = 28,
+    val subtitleMode: SubtitleMode = SubtitleMode.Balanced,
 ) {
     val translateUrl: String
         get() = backendUrl.replace(Regex("/ws$"), "/translate").replace("ws://", "http://").replace("wss://", "https://")
