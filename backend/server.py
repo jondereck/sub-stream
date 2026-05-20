@@ -139,9 +139,9 @@ REALTIME_MIN_SEGMENT_S = 0.45
 REALTIME_MAX_SEGMENT_S = 4.0
 REALTIME_TEXT_SECONDS_PER_CHAR = 1 / 16
 REALTIME_LATENCY_PROFILES = {
-    "fast": {"phrase_chars": 44, "idle_s": 0.45},
-    "balanced": {"phrase_chars": 60, "idle_s": 0.75},
-    "accurate": {"phrase_chars": 92, "idle_s": 1.2},
+    "fast": {"phrase_chars": 44, "stable_s": 0.30, "idle_s": 0.75},
+    "balanced": {"phrase_chars": 60, "stable_s": 0.50, "idle_s": 1.00},
+    "accurate": {"phrase_chars": 92, "stable_s": 0.80, "idle_s": 1.35},
 }
 REALTIME_LATENCY_ALIASES = {"stable": "accurate"}
 PARTIAL_TRANSLATION_BY_LATENCY = {
@@ -2133,22 +2133,24 @@ def openai_event_error_message(event: dict) -> str:
 
 def realtime_caption_window(text: str) -> str:
     """Return a subtitle-sized view of the current realtime transcript."""
-    state = RealtimeCaptionState()
-    output = state.append(text)
-    return output[-1][0] if output else ""
+    state = RealtimePhraseSegmenter()
+    return state.append(text, now=time.time())
 
 
 
-class RealtimeCaptionState:
-    """Groups realtime transcript deltas into subtitle-sized phrase blocks."""
+class RealtimePhraseSegmenter:
+    """Buffers realtime transcript deltas into short stable subtitle phrases."""
 
     def __init__(self, latency: str = "balanced") -> None:
         self.set_latency(latency)
         self.current = ""
+        self.started_at: Optional[float] = None
+        self.last_delta_at: Optional[float] = None
 
     def set_latency(self, latency: str) -> None:
         profile = REALTIME_LATENCY_PROFILES.get(safe_realtime_latency(latency), REALTIME_LATENCY_PROFILES["balanced"])
         self.limit = int(profile["phrase_chars"])
+        self.stable_s = float(profile["stable_s"])
         self.idle_s = float(profile["idle_s"])
 
     @staticmethod
@@ -2159,39 +2161,37 @@ class RealtimeCaptionState:
     def first_sentence_boundary(text: str):
         return re.search(r"[.!?。！？؟]+(?:\s+|$)", text)
 
-    def append(self, delta: str) -> list[tuple[str, bool]]:
+    @property
+    def has_pending(self) -> bool:
+        return bool(self.current)
+
+    def append(self, delta: str, *, now: Optional[float] = None) -> str:
+        now = now if now is not None else time.time()
+        if not self.current:
+            self.started_at = now
         self.current = self.clean(self.current + (delta or ""))
-        output: list[tuple[str, bool]] = []
+        self.last_delta_at = now
+        return self.current
 
-        while self.current:
-            boundary = self.first_sentence_boundary(self.current)
-            if boundary:
-                text = self.current[:boundary.end()].strip()
-                rest = self.current[boundary.end():].strip()
-                if text:
-                    output.append((text, True))
-                self.current = rest
-                continue
+    def ready_reason(self, *, now: Optional[float] = None) -> Optional[str]:
+        if not self.current:
+            return None
+        now = now if now is not None else time.time()
+        if self.first_sentence_boundary(self.current):
+            return "boundary"
+        if len(self.current) >= self.limit:
+            return "length"
+        if self.last_delta_at is not None and now - self.last_delta_at >= self.stable_s:
+            return "stable"
+        return None
 
-            if len(self.current) > self.limit:
-                split_at = self.current.rfind(" ", 0, self.limit + 1)
-                if split_at < int(self.limit * 0.55):
-                    split_at = self.limit
-                text = self.current[:split_at].strip()
-                rest = self.current[split_at:].strip()
-                if text:
-                    output.append((text, True))
-                self.current = rest
-                continue
-
-            output.append((self.current, False))
-            break
-
-        return output
-
-    def flush(self) -> str:
+    def flush(self, *, force: bool = False, now: Optional[float] = None) -> str:
+        if not force and self.ready_reason(now=now) is None:
+            return ""
         text = self.clean(self.current)
         self.current = ""
+        self.started_at = None
+        self.last_delta_at = None
         return text
 
 
@@ -2244,8 +2244,11 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 OPENAI_REALTIME_TRANSCRIBE_MODEL,
             )
 
-            caption_state = RealtimeCaptionState(session.realtime_latency)
+            phrase_segmenter = RealtimePhraseSegmenter(session.realtime_latency)
+            stable_task: Optional[asyncio.Task] = None
             clear_task: Optional[asyncio.Task] = None
+            send_lock = asyncio.Lock()
+            translation_tasks: set[asyncio.Task] = set()
             audio_frames_sent = 0
             audio_bytes_sent = 0
             raw_transcript_parts: list[str] = []
@@ -2253,7 +2256,6 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             pending_chunk_meta: Optional[dict] = None
             realtime_caption_seq = 0
             active_caption_id: Optional[str] = None
-            realtime_translated_partials = 0
 
             def current_realtime_caption_id() -> str:
                 nonlocal realtime_caption_seq, active_caption_id
@@ -2269,17 +2271,16 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             async def send_realtime_caption(
                 text: str,
                 *,
+                caption_id: str,
+                timing: AudioChunkTiming,
                 is_final: bool = False,
                 delta: Optional[str] = None,
                 phase: str = "interim",
                 source_text: Optional[str] = None,
                 translated_text: Optional[str] = None,
                 translation_started_at: Optional[float] = None,
-                reset_caption: bool = False,
             ) -> None:
                 now = time.time()
-                timing = realtime_timeline.caption_window(text, is_final=is_final, now=now)
-                caption_id = current_realtime_caption_id()
                 log.info(
                     "latency realtime-transcript-emitted text=%r captionId=%s phase=%s chunkId=%d segmentStartTs=%.3f segmentEndTs=%.3f emittedAt=%.3f totalLagMs=%.0f",
                     text,
@@ -2313,16 +2314,144 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                     translation_started_at=translation_started_at,
                     extra={"mode": REALTIME_TRANSCRIBER},
                 )
-                await send_transcript_payload(ws, payload)
-                if reset_caption:
+                async with send_lock:
+                    await send_transcript_payload(ws, payload)
+
+            async def emit_source_preview(text: str, *, delta: Optional[str] = None) -> None:
+                if not text:
+                    return
+                if should_translate_session(session) and not session.show_source_first:
+                    return
+                now = time.time()
+                caption_id = current_realtime_caption_id()
+                timing = realtime_timeline.caption_window(text, is_final=False, now=now)
+                await send_realtime_caption(
+                    text,
+                    caption_id=caption_id,
+                    timing=timing,
+                    is_final=False,
+                    delta=delta,
+                    phase="source-preview" if should_translate_session(session) else "interim",
+                    source_text=text,
+                )
+
+            async def translate_and_emit(
+                *,
+                caption_id: str,
+                timing: AudioChunkTiming,
+                source_text: str,
+                src: str,
+                translation_started_at: float,
+            ) -> None:
+                try:
+                    translated = await asyncio.to_thread(
+                        translate,
+                        source_text,
+                        src,
+                        session.target_lang,
+                        session.translator,
+                    )
+                    translated_at = time.time()
+                    log.info(
+                        "latency realtime-translation-emitted phase=stable source=%s target=%s rawChars=%d outChars=%d translateMs=%.0f totalLagMs=%.0f",
+                        src,
+                        session.target_lang,
+                        len(source_text),
+                        len(translated or ""),
+                        (translated_at - translation_started_at) * 1000,
+                        (translated_at - timing.start_ts) * 1000,
+                    )
+                    if not translated:
+                        return
+                    await send_realtime_caption(
+                        translated,
+                        caption_id=caption_id,
+                        timing=timing,
+                        is_final=True,
+                        phase="translated-final",
+                        source_text=source_text,
+                        translated_text=translated,
+                        translation_started_at=translation_started_at,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.warning("realtime stable phrase translation failed: %s", e)
+
+            def track_translation_task(task: asyncio.Task) -> None:
+                translation_tasks.add(task)
+                task.add_done_callback(lambda finished: translation_tasks.discard(finished))
+
+            async def emit_stable_phrase(*, force: bool = False, reason: str = "stable") -> None:
+                nonlocal stable_task
+                current_task = asyncio.current_task()
+                if stable_task and stable_task is not current_task:
+                    stable_task.cancel()
+                stable_task = None
+
+                now = time.time()
+                text = phrase_segmenter.flush(force=force, now=now)
+                if not text:
+                    return
+
+                prepared = session.realtime_transcript_buffer.prepare(text, force=True)
+                if not prepared.text:
+                    log.info(
+                        "openai realtime phrase suppressed reason=%s raw=%r",
+                        prepared.reason,
+                        text,
+                    )
+                    realtime_timeline.reset_phrase()
                     reset_realtime_caption()
+                    return
+
+                source_text = prepared.text
+                caption_id = current_realtime_caption_id()
+                timing = realtime_timeline.caption_window(source_text, is_final=True, now=now)
+                log.info(
+                    "openai realtime phrase stable reason=%s captionId=%s chars=%d segmentStartTs=%.3f segmentEndTs=%.3f",
+                    reason,
+                    caption_id,
+                    len(source_text),
+                    timing.start_ts,
+                    timing.end_ts,
+                )
+
+                if should_translate_session(session):
+                    if session.show_source_first:
+                        await send_realtime_caption(
+                            source_text,
+                            caption_id=caption_id,
+                            timing=timing,
+                            is_final=False,
+                            phase="source-preview",
+                            source_text=source_text,
+                        )
+                    src = session.source_lang if session.source_lang != "auto" else "auto"
+                    translation_started_at = time.time()
+                    track_translation_task(asyncio.create_task(translate_and_emit(
+                        caption_id=caption_id,
+                        timing=timing,
+                        source_text=source_text,
+                        src=src,
+                        translation_started_at=translation_started_at,
+                    )))
+                else:
+                    await send_realtime_caption(
+                        source_text,
+                        caption_id=caption_id,
+                        timing=timing,
+                        is_final=True,
+                        phase="source-final",
+                        source_text=source_text,
+                    )
+
+                reset_realtime_caption()
 
             async def clear_after_idle() -> None:
-                await asyncio.sleep(caption_state.idle_s)
-                caption_state.flush()
-                session.realtime_transcript_buffer.reset()
-                realtime_timeline.reset_phrase()
-                await send_realtime_caption("", is_final=True, phase="source-final", reset_caption=True)
+                await asyncio.sleep(phrase_segmenter.idle_s)
+                if phrase_segmenter.has_pending:
+                    await emit_stable_phrase(force=True, reason="idle")
 
             def schedule_idle_clear() -> None:
                 nonlocal clear_task
@@ -2330,8 +2459,37 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                     clear_task.cancel()
                 clear_task = asyncio.create_task(clear_after_idle())
 
+            async def flush_after_stable(expected_last_delta_at: Optional[float]) -> None:
+                await asyncio.sleep(phrase_segmenter.stable_s)
+                if (
+                    phrase_segmenter.has_pending and
+                    phrase_segmenter.last_delta_at == expected_last_delta_at and
+                    phrase_segmenter.ready_reason(now=time.time()) == "stable"
+                ):
+                    await emit_stable_phrase(force=True, reason="stable-window")
+
+            def schedule_stable_flush() -> None:
+                nonlocal stable_task
+                if stable_task:
+                    stable_task.cancel()
+                stable_task = asyncio.create_task(flush_after_stable(phrase_segmenter.last_delta_at))
+
+            def reset_realtime_buffers() -> None:
+                nonlocal stable_task, clear_task
+                raw_transcript_parts.clear()
+                phrase_segmenter.flush(force=True)
+                session.realtime_transcript_buffer.reset()
+                realtime_timeline.reset_phrase()
+                reset_realtime_caption()
+                if stable_task:
+                    stable_task.cancel()
+                    stable_task = None
+                if clear_task:
+                    clear_task.cancel()
+                    clear_task = None
+
             async def browser_to_openai() -> None:
-                nonlocal audio_frames_sent, audio_bytes_sent, pending_chunk_meta, realtime_translated_partials
+                nonlocal audio_frames_sent, audio_bytes_sent, pending_chunk_meta
                 while True:
                     msg = await ws.receive()
                     if msg.get("type") == "websocket.disconnect":
@@ -2386,29 +2544,20 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             old_vad_silence_ms = session.vad_silence_ms
                             apply_config(session, cfg)
                             if session.realtime_latency != old_latency:
-                                caption_state.set_latency(session.realtime_latency)
+                                phrase_segmenter.set_latency(session.realtime_latency)
                             if session.source_lang != old_source or session.vad_silence_ms != old_vad_silence_ms:
-                                raw_transcript_parts.clear()
-                                realtime_translated_partials = 0
-                                caption_state.flush()
-                                realtime_timeline.reset_phrase()
-                                reset_realtime_caption()
+                                reset_realtime_buffers()
                                 await upstream.send(json.dumps(realtime_transcription_session_update(
                                     session.source_lang,
                                     session.vad_silence_ms,
                                 )))
                             if session.target_lang != old_target:
-                                raw_transcript_parts.clear()
-                                realtime_translated_partials = 0
-                                caption_state.flush()
-                                realtime_timeline.reset_phrase()
-                                reset_realtime_caption()
+                                reset_realtime_buffers()
                                 log.info("realtime target changed target=%s; translation is applied after transcription", session.target_lang)
                         elif cfg.get("type") == "chunk":
                             pending_chunk_meta = cfg
 
             async def openai_to_browser() -> None:
-                nonlocal realtime_translated_partials
                 async for raw in upstream:
                     try:
                         event = json.loads(raw)
@@ -2435,115 +2584,30 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         raw_transcript_parts.append(delta)
                         if clear_task:
                             clear_task.cancel()
-                        if should_translate_session(session):
-                            for text, is_final in caption_state.append(delta):
-                                if not text:
-                                    continue
-                                if session.show_source_first:
-                                    await send_realtime_caption(
-                                        text,
-                                        is_final=False,
-                                        delta=delta if not is_final else None,
-                                        phase="source-preview",
-                                        source_text=text,
-                                    )
-                                if not is_final or not session_partial_translation_enabled(session):
-                                    continue
-                                src = session.source_lang if session.source_lang != "auto" else "auto"
-                                translation_started_at = time.time()
-                                translated = await asyncio.to_thread(translate, text, src, session.target_lang, session.translator)
-                                translated_at = time.time()
-                                log.info(
-                                    "latency realtime-translation-emitted phase=partial source=%s target=%s chars=%d outChars=%d translateMs=%.0f totalLagMs=%.0f",
-                                    src,
-                                    session.target_lang,
-                                    len(text),
-                                    len(translated or ""),
-                                    (translated_at - translation_started_at) * 1000,
-                                    (translated_at - latest_start) * 1000,
-                                )
-                                if translated:
-                                    realtime_translated_partials += 1
-                                    await send_realtime_caption(
-                                        translated,
-                                        is_final=True,
-                                        phase="translated-partial",
-                                        source_text=text,
-                                        translated_text=translated,
-                                        translation_started_at=translation_started_at,
-                                        reset_caption=True,
-                                    )
-                            schedule_idle_clear()
-                            continue
-                        for text, is_final in caption_state.append(delta):
-                            await send_realtime_caption(
-                                text,
-                                is_final=is_final,
-                                delta=delta,
-                                phase="source-final" if is_final else "interim",
-                                source_text=text,
-                                reset_caption=is_final,
-                            )
+                        text = phrase_segmenter.append(delta, now=delta_at)
+                        if text:
+                            await emit_source_preview(text, delta=delta)
+                        reason = phrase_segmenter.ready_reason(now=delta_at)
+                        if reason in ("boundary", "length"):
+                            await emit_stable_phrase(force=True, reason=reason)
+                        elif phrase_segmenter.has_pending:
+                            schedule_stable_flush()
                         schedule_idle_clear()
                     elif event_type in (
                         "conversation.item.input_audio_transcription.completed",
                         "conversation.item.input_audio_transcription.done",
                         "response.audio_transcript.done",
                     ):
-                        if should_translate_session(session) and realtime_translated_partials:
-                            text = caption_state.flush()
-                        else:
-                            text = event.get("transcript") or "".join(raw_transcript_parts) or caption_state.flush()
+                        had_deltas = bool(raw_transcript_parts)
+                        text = event.get("transcript") or ""
                         raw_transcript_parts.clear()
-                        caption_state.flush()
                         log.info("openai realtime transcript completed chars=%d", len(text or ""))
-                        if not text and realtime_translated_partials:
-                            realtime_translated_partials = 0
-                            schedule_idle_clear()
-                            continue
-                        prepared = session.realtime_transcript_buffer.prepare(text, force=True)
-                        if not prepared.text:
-                            log.info(
-                                "openai realtime transcript suppressed reason=%s raw=%r",
-                                prepared.reason,
-                                text,
-                            )
-                            schedule_idle_clear()
-                            continue
-                        text = prepared.text
-                        if text and should_translate_session(session):
-                            src = session.source_lang if session.source_lang != "auto" else "auto"
-                            raw_text = text
-                            translation_started_at = time.time()
-                            text = await asyncio.to_thread(translate, text, src, session.target_lang, session.translator)
-                            translated_at = time.time()
-                            log.info(
-                                "latency realtime-translation-emitted phase=final source=%s target=%s rawChars=%d outChars=%d translateMs=%.0f",
-                                src,
-                                session.target_lang,
-                                len(raw_text),
-                                len(text or ""),
-                                (translated_at - translation_started_at) * 1000,
-                            )
-                            if text:
-                                await send_realtime_caption(
-                                    text,
-                                    is_final=True,
-                                    phase="translated-final",
-                                    source_text=raw_text,
-                                    translated_text=text,
-                                    translation_started_at=translation_started_at,
-                                    reset_caption=True,
-                                )
-                            realtime_translated_partials = 0
-                        elif text:
-                            await send_realtime_caption(
-                                text,
-                                is_final=True,
-                                phase="source-final",
-                                source_text=text,
-                                reset_caption=True,
-                            )
+                        if phrase_segmenter.has_pending:
+                            await emit_stable_phrase(force=True, reason="completed")
+                        elif text and not had_deltas:
+                            phrase_segmenter.append(text, now=time.time())
+                            await emit_source_preview(text)
+                            await emit_stable_phrase(force=True, reason="completed")
                         schedule_idle_clear()
                     elif event_type in ("session.created", "transcription_session.created", "transcription_session.updated"):
                         log.info("openai realtime event type=%s", event_type)
@@ -2560,6 +2624,10 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 task.cancel()
             if clear_task:
                 clear_task.cancel()
+            if stable_task:
+                stable_task.cancel()
+            for task in list(translation_tasks):
+                task.cancel()
             for task in done:
                 task.result()
         finally:

@@ -42,8 +42,15 @@ class CaptureService : Service() {
     private var cloudClient: CloudRealtimeClient? = null
     private var localEngine: LocalWhisperEngine? = null
     private var activeSettings: AppSettings? = null
-    private var pendingCaptionUpdate: Runnable? = null
-    private var pendingTranslationSegmentId: String? = null
+    private var activeCaption: ScheduledCaption? = null
+    private val captionQueue = mutableListOf<ScheduledCaption>()
+    private var renderLoopScheduled = false
+    private val renderCaptionRunnable = object : Runnable {
+        override fun run() {
+            renderLoopScheduled = false
+            renderScheduledCaption()
+        }
+    }
     private var lastSilentStatusAt = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -135,14 +142,14 @@ class CaptureService : Service() {
         capture = PlaybackAudioCapture(activeProjection, captureSampleRate).also { audioCapture ->
             audioCapture.start(
                 scope = serviceScope,
-                onAudio = audio@ { bytes, _ ->
+                onAudio = audio@ { bytes, capturedAtMs ->
                     if (PcmUtils.rms(bytes) < SILENCE_RMS) {
                         maybeShowSilentStatus()
                         clearCaptionIfSafe()
                         return@audio
                     }
                     when (settings.engine) {
-                        EngineMode.CloudRealtime -> cloudClient?.sendPcm16(bytes)
+                        EngineMode.CloudRealtime -> cloudClient?.sendPcm16(bytes, capturedAtMs)
                         EngineMode.LocalWhisper -> localEngine?.acceptPcm(bytes)
                     }
                 },
@@ -158,9 +165,10 @@ class CaptureService : Service() {
         cloudClient = null
         localEngine?.close()
         localEngine = null
-        pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
-        pendingCaptionUpdate = null
-        pendingTranslationSegmentId = null
+        mainHandler.removeCallbacks(renderCaptionRunnable)
+        renderLoopScheduled = false
+        activeCaption = null
+        captionQueue.clear()
         activeSettings = null
         if (stopProjection) {
             projection?.runCatching { stop() }
@@ -180,53 +188,117 @@ class CaptureService : Service() {
     }
 
     private fun updateCaption(update: CaptionUpdate) {
+        mainHandler.post { enqueueCaptionUpdate(update) }
+    }
+
+    private fun enqueueCaptionUpdate(update: CaptionUpdate) {
         val settings = activeSettings ?: return
         if (update.stage == CaptionStage.Source && !settings.showSourceFirst) return
 
-        val segmentId = update.segmentId.ifBlank { update.chunkId }
-        val isTranslation = update.stage == CaptionStage.Translation
-        if (!isTranslation || pendingTranslationSegmentId != segmentId) {
-            pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
-        }
-        val displayText = update.displayText(settings)
-        if (displayText.isBlank()) return
-
-        val delayMs = if (
-            isTranslation &&
-            pendingTranslationSegmentId == segmentId &&
-            settings.translationGraceMs > 0
-        ) {
-            settings.translationGraceMs
-        } else {
-            0L
-        }
-
+        val item = update.toScheduledCaption(settings) ?: return
+        val isTranslation = item.stage == CaptionStage.Translation
         if (isTranslation) {
             Log.d(
                 TAG,
-                "translation emitted segmentId=$segmentId chunkId=${update.chunkId} delayMs=${update.transcriptToTranslationDelayMs}",
+                "translation emitted segmentId=${item.segmentId} chunkId=${item.chunkId} delayMs=${item.transcriptToTranslationDelayMs}",
             )
-            pendingTranslationSegmentId = segmentId.takeIf { it.isNotBlank() }
         } else {
-            pendingTranslationSegmentId = segmentId.takeIf { it.isNotBlank() }
-            Log.d(TAG, "transcript emitted segmentId=$segmentId chunkId=${update.chunkId} phase=${update.phase}")
+            Log.d(TAG, "transcript emitted segmentId=${item.segmentId} chunkId=${item.chunkId} phase=${item.phase}")
         }
 
-        val captionRunnable = Runnable {
-            overlay?.updateCaption(displayText)
-            if (isTranslation && pendingTranslationSegmentId == segmentId) {
-                pendingTranslationSegmentId = null
+        val current = activeCaption
+        val matchingQueued = captionQueue.filter { it.segmentId == item.segmentId }
+        if (current?.segmentId == item.segmentId) {
+            if (current.stage == CaptionStage.Translation && item.stage == CaptionStage.Source) {
+                return
             }
+
+            val sourceToTranslation = current.stage == CaptionStage.Source && item.stage == CaptionStage.Translation
+            val visibleAt = current.actualShowAtMs ?: maxOf(System.currentTimeMillis(), current.showAtMs)
+            val replaceAt = visibleAt + settings.translationGraceMs
+            if (sourceToTranslation && settings.showSourceFirst && System.currentTimeMillis() < replaceAt) {
+                item.actualShowAtMs = current.actualShowAtMs
+                current.pendingReplacement = item
+                current.replaceAtMs = replaceAt
+            } else {
+                item.actualShowAtMs = current.actualShowAtMs
+                activeCaption = item
+            }
+            captionQueue.removeAll { it.segmentId == item.segmentId }
+        } else if (item.stage == CaptionStage.Source && matchingQueued.any { it.stage == CaptionStage.Translation }) {
+            return
+        } else if (item.stage == CaptionStage.Translation && matchingQueued.any { it.stage == CaptionStage.Source }) {
+            captionQueue.removeAll { it.segmentId == item.segmentId }
+            matchingQueued.filter { it.stage == CaptionStage.Source }.forEach { sourceItem ->
+                item.actualShowAtMs = sourceItem.actualShowAtMs
+                sourceItem.pendingReplacement = item
+                sourceItem.replaceAtMs = sourceItem.showAtMs + settings.translationGraceMs
+                captionQueue += sourceItem
+            }
+        } else {
+            captionQueue.removeAll { it.segmentId == item.segmentId }
+            captionQueue += item
         }
-        pendingCaptionUpdate = captionRunnable
-        mainHandler.postDelayed(captionRunnable, delayMs)
+
+        captionQueue.sortBy { it.showAtMs }
+        while (captionQueue.size > MAX_CAPTION_QUEUE_ITEMS) {
+            captionQueue.removeAt(0)
+        }
+        scheduleCaptionRender()
+    }
+
+    private fun renderScheduledCaption() {
+        val now = System.currentTimeMillis()
+        while (activeCaption == null && captionQueue.isNotEmpty() && now >= captionQueue.first().showAtMs) {
+            activeCaption = captionQueue.removeAt(0)
+        }
+
+        val current = activeCaption
+        if (current == null) {
+            if (captionQueue.isNotEmpty()) scheduleCaptionRender()
+            return
+        }
+
+        val replacement = current.pendingReplacement
+        if (replacement != null && now >= current.replaceAtMs) {
+            replacement.actualShowAtMs = current.actualShowAtMs
+            activeCaption = replacement
+            renderScheduledCaption()
+            return
+        }
+
+        if (now >= current.showAtMs && current.actualShowAtMs == null) {
+            current.actualShowAtMs = now
+        }
+        val actualShowAt = current.actualShowAtMs ?: current.showAtMs
+        val hideAt = maxOf(current.segmentEndMs, actualShowAt + current.minVisibleMs)
+        if (now >= current.showAtMs && now < hideAt) {
+            overlay?.updateCaption(current.text)
+            scheduleCaptionRender()
+            return
+        }
+
+        if (now >= hideAt) {
+            activeCaption = null
+            renderScheduledCaption()
+            return
+        }
+
+        scheduleCaptionRender()
+    }
+
+    private fun scheduleCaptionRender() {
+        if (renderLoopScheduled) return
+        renderLoopScheduled = true
+        mainHandler.postDelayed(renderCaptionRunnable, CAPTION_RENDER_INTERVAL_MS)
     }
 
     private fun clearCaptionIfSafe() {
-        if (pendingTranslationSegmentId != null) return
-        pendingCaptionUpdate?.let { mainHandler.removeCallbacks(it) }
-        pendingCaptionUpdate = null
-        mainHandler.post { overlay?.updateCaption("") }
+        mainHandler.post {
+            if (activeCaption == null && captionQueue.isEmpty()) {
+                overlay?.updateCaption("")
+            }
+        }
     }
 
     private fun updateStatus(status: String) {
@@ -287,6 +359,8 @@ class CaptureService : Service() {
         private const val CHANNEL_ID = "substream_capture"
         private const val NOTIFICATION_ID = 7104
         private const val SILENCE_RMS = 0.005f
+        private const val CAPTION_RENDER_INTERVAL_MS = 50L
+        private const val MAX_CAPTION_QUEUE_ITEMS = 80
 
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
@@ -347,6 +421,21 @@ class CaptureService : Service() {
     }
 }
 
+private data class ScheduledCaption(
+    val segmentId: String,
+    val chunkId: String,
+    val phase: String,
+    val stage: CaptionStage,
+    val text: String,
+    val showAtMs: Long,
+    val segmentEndMs: Long,
+    val minVisibleMs: Long,
+    val transcriptToTranslationDelayMs: Long?,
+    var actualShowAtMs: Long? = null,
+    var pendingReplacement: ScheduledCaption? = null,
+    var replaceAtMs: Long = 0L,
+)
+
 private fun CaptionUpdate.displayText(settings: AppSettings): String {
     val source = sourceText.ifBlank { if (stage == CaptionStage.Source) text else "" }.trim()
     val translated = translatedText.ifBlank { if (stage == CaptionStage.Translation) text else "" }.trim()
@@ -361,4 +450,43 @@ private fun CaptionUpdate.displayText(settings: AppSettings): String {
     } else {
         translated.ifBlank { source.ifBlank { text.trim() } }
     }
+}
+
+private fun CaptionUpdate.toScheduledCaption(settings: AppSettings): ScheduledCaption? {
+    val displayText = displayText(settings)
+    if (displayText.isBlank()) return null
+
+    val minVisibleMs = readableDurationMs(displayText)
+    val startMs = segmentStartTsMs ?: transcriptEmittedAtMs
+    val endMs = (segmentEndTsMs ?: (startMs + minVisibleMs)).let {
+        if (it <= startMs) startMs + minVisibleMs else it
+    }
+    val segmentKey = segmentId.ifBlank {
+        chunkId.ifBlank { "caption:$transcriptEmittedAtMs" }
+    }
+
+    return ScheduledCaption(
+        segmentId = segmentKey,
+        chunkId = chunkId,
+        phase = phase,
+        stage = stage,
+        text = displayText,
+        showAtMs = startMs + subtitleModeDelayMs(settings),
+        segmentEndMs = endMs + subtitleModeDelayMs(settings),
+        minVisibleMs = minVisibleMs,
+        transcriptToTranslationDelayMs = transcriptToTranslationDelayMs,
+    )
+}
+
+private fun subtitleModeDelayMs(settings: AppSettings): Long {
+    return when (settings.subtitleMode) {
+        SubtitleMode.Fast -> 0L
+        SubtitleMode.Balanced -> 150L
+        SubtitleMode.Accurate -> 350L
+    }
+}
+
+private fun readableDurationMs(text: String): Long {
+    val estimated = 900L + (text.trim().length * 45L)
+    return estimated.coerceIn(1_200L, 8_000L)
 }

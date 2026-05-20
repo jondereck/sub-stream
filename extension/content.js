@@ -19,8 +19,8 @@ const MAX_SUBTITLE_QUEUE_ITEMS = 80;
 const EPOCH_SECONDS_THRESHOLD = 1000000000;
 const SUBTITLE_MODE_DELAYS_MS = {
   fast: 0,
-  balanced: 500,
-  accurate: 900,
+  balanced: 150,
+  accurate: 350,
 };
 
 let overlayEl = null;
@@ -460,6 +460,7 @@ function enqueueSubtitleItems(items) {
   if (!items.length) return;
   const groupId = items[0].groupId;
   const incomingIsTranslation = isTranslationItem(items[0]);
+  const incomingIsSource = isSourceItem(items[0]);
   const queuedMatches = subtitleQueue.filter((item) => item.groupId === groupId);
   const matchedActive = !!(activeSubtitle && activeSubtitle.groupId === groupId);
   const matchedQueued = queuedMatches.length > 0;
@@ -475,6 +476,9 @@ function enqueueSubtitleItems(items) {
   }
 
   if (activeSubtitle && activeSubtitle.groupId === groupId) {
+    if (isTranslationItem(activeSubtitle) && incomingIsSource) {
+      return;
+    }
     const replacement = items.find((item) => item.cardIndex === activeSubtitle.cardIndex);
     if (replacement) {
       const sourceToTranslation = isSourceItem(activeSubtitle) && isTranslationItem(replacement);
@@ -487,14 +491,14 @@ function enqueueSubtitleItems(items) {
           replaceAt,
         };
       } else {
-        replacement.actualShowAt = replacement.text === activeSubtitle.text && replacement.phase === activeSubtitle.phase
-          ? activeSubtitle.actualShowAt
-          : activeSubtitle.actualShowAt;
+        replacement.actualShowAt = activeSubtitle.actualShowAt;
         activeSubtitle = replacement;
       }
     }
     subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
     subtitleQueue.push(...items.filter((item) => item.cardIndex > activeSubtitle.cardIndex));
+  } else if (incomingIsSource && queuedMatches.some(isTranslationItem)) {
+    return;
   } else if (incomingIsTranslation && queuedMatches.some(isSourceItem) && showSourceFirstEnabled() && translationGraceMs() > 0) {
     subtitleQueue = subtitleQueue.filter((item) => item.groupId !== groupId);
     const sourceItems = queuedMatches.filter(isSourceItem);
@@ -571,7 +575,8 @@ function updateSubtitles() {
     // Manual offset shifts both showAt and hideAt; readability uses actual
     // display time so late arrivals do not instantly disappear.
     const actualShowAt = activeSubtitle.actualShowAt === null ? showAt : activeSubtitle.actualShowAt;
-    hideAt = Math.max(hideAt, actualShowAt + readableDurationMs(activeSubtitle.text));
+    const minVisibleMs = readableDurationMs(activeSubtitle.text);
+    hideAt = Math.max(hideAt, actualShowAt + minVisibleMs);
 
     if (canShow && now < hideAt) {
       // Within visible window

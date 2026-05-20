@@ -23,8 +23,12 @@ class CloudRealtimeClient(
         .build()
 
     private var socket: WebSocket? = null
+    private var activeSampleRate: Int = 24_000
+    private var chunkSeq: Long = 0
 
     fun connect(sampleRate: Int) {
+        activeSampleRate = sampleRate
+        chunkSeq = 0
         val request = Request.Builder().url(settings.backendUrl).build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -64,8 +68,18 @@ class CloudRealtimeClient(
         })
     }
 
-    fun sendPcm16(bytes: ByteArray) {
-        socket?.send(ByteString.of(*bytes))
+    fun sendPcm16(bytes: ByteArray, capturedAtMs: Long) {
+        val webSocket = socket ?: return
+        val durationS = (bytes.size / 2.0) / activeSampleRate.coerceAtLeast(1)
+        val chunkId = ++chunkSeq
+        val metadata = JSONObject()
+            .put("type", "chunk")
+            .put("chunkId", chunkId)
+            .put("capturedAt", capturedAtMs / 1000.0)
+            .put("duration", durationS)
+            .put("sampleRate", activeSampleRate)
+        webSocket.send(metadata.toString())
+        webSocket.send(ByteString.of(*bytes))
     }
 
     fun close() {
@@ -87,6 +101,9 @@ class CloudRealtimeClient(
             chunkId = chunkId,
             stage = stage,
             phase = phase,
+            receivedAtMs = optTimestampMs("receivedAt"),
+            segmentStartTsMs = optTimestampMs("segmentStartTs"),
+            segmentEndTsMs = optTimestampMs("segmentEndTs"),
             transcriptEmittedAtMs = optDouble("transcriptEmittedAt", System.currentTimeMillis() / 1000.0)
                 .times(1000)
                 .toLong(),
@@ -110,6 +127,16 @@ class CloudRealtimeClient(
             Log.d(TAG, "transcript emitted segmentId=${update.segmentId} chunkId=${update.chunkId} phase=$phase")
         }
         return update
+    }
+
+    private fun JSONObject.optTimestampMs(name: String): Long? {
+        if (!has(name)) return null
+        val seconds = optDouble(name, Double.NaN)
+        return if (seconds.isFinite()) {
+            (seconds * 1000).toLong()
+        } else {
+            null
+        }
     }
 
     companion object {
