@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sub Stream AI — UI Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="stage">
+    <section class="shell popup">
+      <header class="app-header">
+        <div class="logo" aria-hidden="true">SS</div>
+        <div class="brand">
+          <h1>Sub Stream AI <span class="spark">✦</span></h1>
+          <p>Live translated captions</p>
+        </div>
+        <div class="status-pill"><span></span>Ready</div>
+        <button class="icon-btn kebab" aria-label="More options">⋮</button>
+      </header>
+
+      <section class="hero-card">
+        <div class="hero-left">
+          <button id="startBtn" class="start-btn"><span class="play">▶</span><span>Start Captions</span></button>
+          <div class="api-row">
+            <div>
+              <h2><span>🔑</span> API key required</h2>
+              <p>Add your API key to begin<br/>live translation.</p>
+            </div>
+            <button class="outline-key"><span>🔑</span> Add API Key</button>
+          </div>
+        </div>
+        <div class="wave" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-title"><span class="icon">◎</span><h2>Languages</h2></div>
+        <div class="language-grid">
+          <label>From
+            <button class="select"><span class="flag">🇯🇵</span> Japanese <b>⌄</b></button>
+          </label>
+          <label>To
+            <button class="select"><span class="flag">🇺🇸</span> English <b>⌄</b></button>
+          </label>
+          <label>Mode
+            <button class="select"><span class="flag">✧</span> Auto-detect best <b>⌄</b></button>
+          </label>
+        </div>
+      </section>
+
+      <section class="card caption-card">
+        <div class="section-title"><span class="cc">CC</span><h2>Caption Display</h2></div>
+        <div class="caption-grid">
+          <div class="field">
+            <label>Visible duration</label>
+            <div class="range-row">
+              <input type="range" min="1" max="8" value="3" step=".5" />
+              <strong>3.0s</strong>
+            </div>
+          </div>
+          <div class="field">
+            <label>Display style</label>
+            <div class="segmented">
+              <button class="active">▣ Replace original</button>
+              <button>▤ Show both</button>
+            </div>
+          </div>
+          <div class="field wide">
+            <label>Sync</label>
+            <div class="sync-row">
+              <button class="select wide-select"><span class="green">↻</span> Auto sync (recommended) <b>⌄</b></button>
+              <p>Keeps captions timed<br/>with the spoken audio.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card cost-card">
+        <div class="section-title row-between">
+          <div><span class="money">$</span><h2>Usage & Cost</h2></div>
+          <button class="text-btn">↻ Reset stats</button>
+        </div>
+        <div class="cost-grid">
+          <div><span>Session</span><strong>$0.00</strong><small>0 min</small></div>
+          <div><span>Today</span><strong>$0.22</strong><small>6.5 active min</small></div>
+          <div><span>Total</span><strong>$1.06</strong><small>All time</small></div>
+        </div>
+        <div class="estimate">⌁ Approx. $0.03 per active minute <span>ⓘ</span></div>
+      </section>
+
+      <section id="advancedToggle" class="card advanced-summary" role="button" tabindex="0">
+        <span class="gear">⚙</span>
+        <div>
+          <h2>Advanced Settings</h2>
+          <p>Latency, buffering, backend and developer options</p>
+        </div>
+        <span class="chev">⌄</span>
+      </section>
+
+      <footer class="footer">
+        <span>♡ Made for creators</span>
+        <span>•</span>
+        <span>v1.2.0</span>
+        <span class="push">ⓘ Need help?</span>
+      </footer>
+    </section>
+
+    <section id="advancedPanel" class="shell advanced-panel">
+      <header class="adv-header">
+        <span class="gear large">⚙</span>
+        <div>
+          <h1>Advanced Settings</h1>
+          <p>Fine tune performance and behavior.</p>
+        </div>
+        <button class="icon-btn collapse" aria-label="Collapse advanced settings">⌃</button>
+      </header>
+
+      <section class="adv-card">
+        <h2>▤ Backend</h2>
+        <label class="stack">Backend URL
+          <input value="ws://127.0.0.1:8765/ws">
+          <small>Your local or remote WebSocket backend endpoint.</small>
+        </label>
+        <label class="stack">Subtitle mode
+          <button class="select input-like">Accurate (best quality) <b>⌄</b></button>
+          <small>Fast = lower latency, Accurate = higher quality.</small>
+        </label>
+      </section>
+
+      <section class="adv-card">
+        <h2>◷ Latency & Buffering</h2>
+        <div class="setting-row">
+          <div><label>Audio chunk window (ms) <span>ⓘ</span></label><small>Lower sends audio sooner. Higher adds more context.</small></div>
+          <input type="number" value="950">
+        </div>
+        <div class="setting-row">
+          <div><label>Max audio buffer (ms) <span>ⓘ</span></label><small>Higher allows smoother bursts, but may feel slower.</small></div>
+          <input type="number" value="1300">
+        </div>
+        <div class="setting-row">
+          <div><label>VAD silence wait (ms) <span>ⓘ</span></label><small>Lower ends speech segments faster. Higher waits longer.</small></div>
+          <input type="number" value="800">
+        </div>
+        <div class="setting-row">
+          <div><label>Translation grace (ms) <span>ⓘ</span></label><small>Delay before showing translation for stability.</small></div>
+          <input type="number" value="400">
+        </div>
+      </section>
+
+      <section class="adv-card">
+        <h2>⌁ Sync & Timing</h2>
+        <label class="stack">Sync mode
+          <button class="select input-like">Auto timeline sync <b>⌄</b></button>
+          <small>Uses subtitle timeline metadata when available.</small>
+        </label>
+        <div class="mini-grid">
+          <div><span>Auto sync</span><strong class="green">On</strong></div>
+          <div><span>Measured lag</span><strong>0.0s</strong></div>
+          <div><span>Saved auto offset</span><strong>0.0s</strong></div>
+          <div><span>Live auto offset</span><strong>0.0s</strong></div>
+          <div><span>Total auto offset</span><strong>0.0s</strong></div>
+          <div><span>Effective offset</span><strong>0.0s</strong></div>
+        </div>
+        <p class="tiny-note">Status only: these cards are read-only. Use manual offset below.</p>
+        <div class="manual">
+          <label>Manual offset (ms) <span>ⓘ</span></label>
+          <div class="range-row">
+            <span>-2000ms</span><input type="range" min="-2000" max="2000" value="0"><span>+2000ms</span>
+            <input type="number" value="0">
+          </div>
+          <small>Adjust caption timing relative to audio (negative = earlier).</small>
+        </div>
+      </section>
+
+      <section class="adv-card">
+        <h2>⚑ Translation Behavior</h2>
+        <div class="toggle-row"><span>Show source transcript first <b>ⓘ</b></span><label class="switch"><input type="checkbox"><i></i></label></div>
+        <div class="setting-row simple"><label>Translation display</label><button class="select input-like">Replace source with translation <b>⌄</b></button></div>
+        <div class="toggle-row"><span>Partial translation updates <b>ⓘ</b><small>Updates captions as they are being translated.</small></span><label class="switch"><input checked type="checkbox"><i></i></label></div>
+      </section>
+
+      <section class="adv-card">
+        <h2>&lt;/&gt; Developer Options</h2>
+        <div class="setting-row">
+          <div><label>Translation flush wait (ms) <span>ⓘ</span></label><small>Wait before finalizing and sending translation.</small></div>
+          <input type="number" value="900">
+        </div>
+        <div class="toggle-row"><span>Debug logs <b>ⓘ</b></span><label class="switch"><input type="checkbox"><i></i></label></div>
+        <div class="button-row">
+          <button class="secondary">↻ Reset to Defaults</button>
+          <button class="save">✓ Save Settings</button>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>♡ Made for creators</span>
+        <span>•</span>
+        <span>v1.2.0</span>
+        <span class="push">ⓘ Need help?</span>
+      </footer>
+    </section>
+  </main>
+
+  <script src="./script.js"></script>
+</body>
+</html>

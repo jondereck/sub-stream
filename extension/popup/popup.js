@@ -13,8 +13,11 @@ const els = {
   usageMeta: $('usageMeta'),
   resetUsage: $('resetUsage'),
   sourceLang: $('sourceLang'),
+  sourceLangIcon: $('sourceLangIcon'),
   targetLang: $('targetLang'),
+  targetLangIcon: $('targetLangIcon'),
   translationMode: $('translationMode'),
+  translationModeIcon: $('translationModeIcon'),
   fontSize: $('fontSize'),
   fontSizeVal: $('fontSizeVal'),
   position: $('position'),
@@ -48,6 +51,10 @@ const els = {
   testApiKey: $('testApiKey'),
   clearApiKey: $('clearApiKey'),
   apiKeyStatus: $('apiKeyStatus'),
+  advancedToggle: $('advancedToggle'),
+  advancedPanel: $('advancedPanel'),
+  collapseAdvanced: $('collapseAdvanced'),
+  openApiKey: $('openApiKey'),
 };
 
 const DEFAULTS = {
@@ -158,6 +165,171 @@ let apiKeyInfo = { configured: false, source: null };
 let loadedSettingsVersion = 0;
 let toastTimer = null;
 let saveDebounceTimer = null;
+
+const LANGUAGE_BADGES = {
+  auto: '🌐',
+  ar: '🇸🇦',
+  de: '🇩🇪',
+  en: '🇺🇸',
+  es: '🇪🇸',
+  fil: '🇵🇭',
+  fr: '🇫🇷',
+  hi: '🇮🇳',
+  ja: '🇯🇵',
+  ko: '🇰🇷',
+  tr: '🇹🇷',
+  zh: '🇨🇳',
+};
+
+const CUSTOM_SELECTS = new Map();
+
+function setAdvancedOpen(open, focusApiKey = false) {
+  if (!els.advancedPanel || !els.advancedToggle) return;
+  els.advancedPanel.hidden = !open;
+  document.body.classList.toggle('advanced-open', open);
+  els.advancedToggle.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  requestAnimationFrame(() => {
+    els.advancedPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });
+    if (focusApiKey && els.apiKey) els.apiKey.focus();
+  });
+}
+
+function updateLanguageBadges() {
+  if (els.sourceLangIcon) {
+    els.sourceLangIcon.textContent = LANGUAGE_BADGES[els.sourceLang.value] || els.sourceLang.value.slice(0, 2).toUpperCase();
+  }
+  if (els.targetLangIcon) {
+    els.targetLangIcon.textContent = LANGUAGE_BADGES[els.targetLang.value] || els.targetLang.value.slice(0, 2).toUpperCase();
+  }
+  if (els.translationModeIcon) {
+    els.translationModeIcon.textContent = els.translationMode.value === 'filipino_english' ? '🇵🇭' : '*';
+  }
+  syncCustomSelects();
+}
+
+function optionBadge(select, option) {
+  if (select.id === 'sourceLang' || select.id === 'targetLang') {
+    return LANGUAGE_BADGES[option.value] || option.value.slice(0, 2).toUpperCase();
+  }
+  if (select.id === 'translationMode') return option.value === 'filipino_english' ? '🇵🇭' : '*';
+  if (select.id === 'position') {
+    if (option.value === 'top') return '↑';
+    if (option.value === 'middle') return '•';
+    return '↓';
+  }
+  if (select.id === 'translationDisplayMode') return option.value === 'translation_dual' ? '2' : '1';
+  if (select.id === 'syncMode') return option.value === 'manual' ? 'M' : 'A';
+  if (select.id === 'transcriber') return option.value === 'local' ? 'L' : 'AI';
+  if (select.id === 'realtimeLatency') return option.value.slice(0, 1).toUpperCase();
+  if (select.id === 'model') return option.value.slice(0, 1).toUpperCase();
+  if (select.id === 'device') return option.value === 'cuda' ? 'GPU' : 'CPU';
+  return '';
+}
+
+function selectedOption(select) {
+  return select.options[select.selectedIndex] || select.options[0];
+}
+
+function closeCustomSelects(exceptSelect = null) {
+  CUSTOM_SELECTS.forEach((parts, select) => {
+    if (select !== exceptSelect) {
+      parts.root.classList.remove('open');
+      parts.button.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+
+function syncCustomSelect(select) {
+  const parts = CUSTOM_SELECTS.get(select);
+  if (!parts) return;
+  const option = selectedOption(select);
+  const badge = option ? optionBadge(select, option) : '';
+  parts.badge.textContent = badge;
+  parts.badge.hidden = !badge;
+  parts.text.textContent = option ? option.textContent.trim() : '';
+  parts.button.disabled = select.disabled;
+  parts.root.classList.toggle('disabled', select.disabled);
+  parts.options.forEach((item) => {
+    const selected = item.dataset.value === select.value;
+    item.classList.toggle('selected', selected);
+    item.setAttribute('aria-selected', String(selected));
+  });
+}
+
+function syncCustomSelects() {
+  CUSTOM_SELECTS.forEach((_, select) => syncCustomSelect(select));
+}
+
+function enhanceSelect(select) {
+  if (CUSTOM_SELECTS.has(select)) return;
+  const root = document.createElement('div');
+  root.className = 'custom-select';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'custom-select-button';
+  button.setAttribute('aria-haspopup', 'listbox');
+  button.setAttribute('aria-expanded', 'false');
+  const badge = document.createElement('span');
+  badge.className = 'custom-select-badge';
+  badge.setAttribute('aria-hidden', 'true');
+  const text = document.createElement('span');
+  text.className = 'custom-select-text';
+  const arrow = document.createElement('span');
+  arrow.className = 'custom-select-arrow';
+  arrow.setAttribute('aria-hidden', 'true');
+  arrow.textContent = 'v';
+  button.append(badge, text, arrow);
+
+  const list = document.createElement('div');
+  list.className = 'custom-select-list';
+  list.setAttribute('role', 'listbox');
+  const optionItems = Array.from(select.options).map((option) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'custom-select-option';
+    item.dataset.value = option.value;
+    item.setAttribute('role', 'option');
+    const itemBadge = document.createElement('span');
+    itemBadge.className = 'custom-select-badge';
+    const badgeValue = optionBadge(select, option);
+    itemBadge.textContent = badgeValue;
+    itemBadge.hidden = !badgeValue;
+    const itemText = document.createElement('span');
+    itemText.textContent = option.textContent.trim();
+    item.append(itemBadge, itemText);
+    item.addEventListener('click', () => {
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      closeCustomSelects();
+    });
+    list.appendChild(item);
+    return item;
+  });
+
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (select.disabled) return;
+    const open = root.classList.contains('open');
+    closeCustomSelects(select);
+    root.classList.toggle('open', !open);
+    button.setAttribute('aria-expanded', String(!open));
+  });
+
+  root.append(button, list);
+  select.insertAdjacentElement('afterend', root);
+  select.classList.add('native-select-hidden');
+  CUSTOM_SELECTS.set(select, { root, button, badge, text, options: optionItems });
+  syncCustomSelect(select);
+}
+
+function enhanceSelects() {
+  document.querySelectorAll('select').forEach(enhanceSelect);
+  document.addEventListener('click', () => closeCustomSelects());
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeCustomSelects();
+  });
+}
 
 function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'; }
 
@@ -383,6 +555,7 @@ async function loadSettings() {
   els.translationFlushMs.value = s.translationFlushMs;
   els.model.value = s.model;
   els.device.value = s.device;
+  updateLanguageBadges();
   currentSettings = s;
   return s;
 }
@@ -520,6 +693,7 @@ function setControlsDisabled(disabled) {
     if (els[key]) els[key].disabled = key === 'partialEmitEnabled' ? true : disabled;
   });
   els.resetSubtitleDelay.disabled = disabled;
+  syncCustomSelects();
 }
 
 function renderSessionState(res) {
@@ -545,7 +719,7 @@ function renderSessionState(res) {
   }
 
   els.toggle.disabled = false;
-  els.toggle.innerHTML = res.isCapturing ? 'Stop' : 'Start';
+  els.toggle.innerHTML = res.isCapturing ? 'Stop Captions' : '<span aria-hidden="true">&gt;</span><span>Start Captions</span>';
   els.toggle.classList.toggle('stop', !!res.isCapturing);
 
   if (res.isCapturing) {
@@ -797,6 +971,7 @@ els.partialEmitEnabled.addEventListener('change', () => {
 });
 ['sourceLang', 'targetLang', 'translationMode'].forEach((key) => {
   els[key].addEventListener('change', () => {
+    updateLanguageBadges();
     saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
   });
 });
@@ -813,6 +988,15 @@ els.partialEmitEnabled.addEventListener('change', () => {
   });
 });
 els.toggle.addEventListener('click', onToggle);
+els.advancedToggle.addEventListener('click', () => {
+  setAdvancedOpen(els.advancedPanel.hidden);
+});
+els.collapseAdvanced.addEventListener('click', () => {
+  setAdvancedOpen(false);
+});
+els.openApiKey.addEventListener('click', () => {
+  setAdvancedOpen(true, true);
+});
 els.resetUsage.addEventListener('click', async () => {
   const res = await chrome.runtime.sendMessage({ target: 'background', type: 'aiUsage:reset' });
   if (res && res.aiUsage) updateUsage(res.aiUsage);
