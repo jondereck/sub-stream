@@ -29,7 +29,9 @@ const DEFAULT_TRANSLATION_DISPLAY_MODE = 'translation_replace';
 const DEFAULT_TRANSLATION_GRACE_MS = 200;
 const SUBTITLE_MODES = new Set(['fast', 'balanced', 'accurate']);
 const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
+const TRANSLATION_MODES = new Set(['auto', 'filipino_english']);
 const ACTIVE_AUDIO_RMS = 0.005;
+const REALTIME_TRANSCRIBERS = new Set(['openai-realtime', 'openai-realtime-translate']);
 let chunkBuffer = new Float32Array(0);
 let chunkBufferStartTs = null;
 let chunkSeq = 0;
@@ -91,7 +93,7 @@ function currentTranslator() {
 }
 
 function isRealtimeMode() {
-  return currentTranscriber() === 'openai-realtime';
+  return REALTIME_TRANSCRIBERS.has(currentTranscriber());
 }
 
 function isOpenAiChunkedMode() {
@@ -125,6 +127,16 @@ function currentTranslationDisplayMode() {
   return TRANSLATION_DISPLAY_MODES.has(mode) ? mode : DEFAULT_TRANSLATION_DISPLAY_MODE;
 }
 
+function currentTranslationMode() {
+  const mode = String((settings && settings.translationMode) || 'auto').toLowerCase().replace(/-/g, '_');
+  return TRANSLATION_MODES.has(mode) ? mode : 'auto';
+}
+
+function currentTranslationGraceMs() {
+  const graceMs = clampLatencyMs(settings && settings.translationGraceMs, 0, 2000, DEFAULT_TRANSLATION_GRACE_MS);
+  return currentTranscriber() === 'openai-realtime-translate' ? Math.min(graceMs, 75) : graceMs;
+}
+
 function targetFrameSamples() {
   const maxBufferMs = clampLatencyMs(settings && settings.maxBufferMs, 250, 10000, DEFAULT_MAX_BUFFER_MS);
   const seconds = isRealtimeMode()
@@ -139,6 +151,7 @@ function buildConfigMessage() {
     sampleRate: targetSampleRate(),
     sourceLang: (settings && settings.sourceLang) || 'auto',
     targetLang: (settings && settings.targetLang) || 'ar',
+    translationMode: currentTranslationMode(),
     realtimeLatency: currentSubtitleMode(),
     task: (settings && settings.task) || 'translate',
     translator: currentTranslator(),
@@ -152,7 +165,7 @@ function buildConfigMessage() {
     translationFlushMs: clampLatencyMs(settings && settings.translationFlushMs, 150, 3000, DEFAULT_TRANSLATION_FLUSH_MS),
     showSourceFirst: settings && typeof settings.showSourceFirst === 'boolean' ? settings.showSourceFirst : true,
     translationDisplayMode: currentTranslationDisplayMode(),
-    translationGraceMs: clampLatencyMs(settings && settings.translationGraceMs, 0, 2000, DEFAULT_TRANSLATION_GRACE_MS)
+    translationGraceMs: currentTranslationGraceMs()
   };
 }
 
@@ -443,7 +456,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } else if (msg.type === 'settings:update') {
         const oldTranscriber = currentTranscriber();
         const oldBackendUrl = (settings && settings.backendUrl) || 'ws://127.0.0.1:8765/ws';
-        if (currentTranscriber() === 'openai-realtime') await flushActiveUsage();
+        if (isRealtimeMode()) await flushActiveUsage();
         settings = { ...(settings || {}), ...(msg.settings || {}) };
         const nextBackendUrl = (settings && settings.backendUrl) || 'ws://127.0.0.1:8765/ws';
         if (oldTranscriber !== currentTranscriber() || oldBackendUrl !== nextBackendUrl) {

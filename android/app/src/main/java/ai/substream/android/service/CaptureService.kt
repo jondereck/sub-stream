@@ -9,6 +9,7 @@ import ai.substream.android.data.EngineMode
 import ai.substream.android.data.OverlayPosition
 import ai.substream.android.data.SubtitleMode
 import ai.substream.android.data.TranslationDisplayMode
+import ai.substream.android.data.TranslationMode
 import ai.substream.android.engine.LocalWhisperEngine
 import ai.substream.android.net.CloudRealtimeClient
 import ai.substream.android.overlay.CaptionOverlay
@@ -115,14 +116,15 @@ class CaptureService : Service() {
             return
         }
 
-        val captureSampleRate = if (settings.engine == EngineMode.CloudRealtime) {
-            PcmUtils.REALTIME_SAMPLE_RATE
-        } else {
-            PcmUtils.SAMPLE_RATE
+        val captureSampleRate = when (settings.engine) {
+            EngineMode.CloudRealtime,
+            EngineMode.RealtimeTranslate -> PcmUtils.REALTIME_SAMPLE_RATE
+            EngineMode.LocalWhisper -> PcmUtils.SAMPLE_RATE
         }
 
         when (settings.engine) {
-            EngineMode.CloudRealtime -> {
+            EngineMode.CloudRealtime,
+            EngineMode.RealtimeTranslate -> {
                 cloudClient = CloudRealtimeClient(
                     settings = settings,
                     onCaption = ::updateCaption,
@@ -149,7 +151,8 @@ class CaptureService : Service() {
                         return@audio
                     }
                     when (settings.engine) {
-                        EngineMode.CloudRealtime -> cloudClient?.sendPcm16(bytes, capturedAtMs)
+                        EngineMode.CloudRealtime,
+                        EngineMode.RealtimeTranslate -> cloudClient?.sendPcm16(bytes, capturedAtMs)
                         EngineMode.LocalWhisper -> localEngine?.acceptPcm(bytes)
                     }
                 },
@@ -340,6 +343,7 @@ class CaptureService : Service() {
             showSourceFirst = getBooleanExtra(EXTRA_SHOW_SOURCE_FIRST, true),
             translationDisplayMode = TranslationDisplayMode.fromWire(getStringExtra(EXTRA_TRANSLATION_DISPLAY_MODE)),
             translationGraceMs = getLongExtra(EXTRA_TRANSLATION_GRACE_MS, 200L).coerceIn(0L, 2_000L),
+            translationMode = TranslationMode.fromWire(getStringExtra(EXTRA_TRANSLATION_MODE)),
         )
     }
 
@@ -376,6 +380,7 @@ class CaptureService : Service() {
         private const val EXTRA_SHOW_SOURCE_FIRST = "show_source_first"
         private const val EXTRA_TRANSLATION_DISPLAY_MODE = "translation_display_mode"
         private const val EXTRA_TRANSLATION_GRACE_MS = "translation_grace_ms"
+        private const val EXTRA_TRANSLATION_MODE = "translation_mode"
         private const val TAG = "SubStreamCapture"
 
         fun ensureNotificationChannel(context: Context) {
@@ -412,6 +417,7 @@ class CaptureService : Service() {
                 .putExtra(EXTRA_SHOW_SOURCE_FIRST, settings.showSourceFirst)
                 .putExtra(EXTRA_TRANSLATION_DISPLAY_MODE, settings.translationDisplayMode.wireValue)
                 .putExtra(EXTRA_TRANSLATION_GRACE_MS, settings.translationGraceMs)
+                .putExtra(EXTRA_TRANSLATION_MODE, settings.translationMode.wireValue)
             ContextCompat.startForegroundService(context, intent)
         }
 

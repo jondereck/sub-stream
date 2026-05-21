@@ -15,13 +15,15 @@ class BackendTranslator(private val settings: AppSettings) {
         .callTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    suspend fun translate(text: String): String = withContext(Dispatchers.IO) {
+    suspend fun translate(text: String, contextSegments: List<String> = emptyList()): String = withContext(Dispatchers.IO) {
         if (text.isBlank()) return@withContext text
 
         val payload = JSONObject()
             .put("text", text.take(MAX_TEXT_CHARS))
             .put("sourceLang", settings.sourceLang)
             .put("targetLang", settings.targetLang)
+            .put("translationMode", settings.translationMode.wireValue)
+            .put("contextSegments", org.json.JSONArray(contextSegments.takeLast(2).map { it.take(300) }))
             .put("token", settings.mobileToken)
             .toString()
 

@@ -31,6 +31,7 @@ class LocalWhisperEngine(
     private var contextPtr = 0L
     private var ready = false
     private var segmentSeq = 0
+    private val recentSegments = ArrayDeque<String>()
 
     fun start() {
         scope.launch {
@@ -115,8 +116,9 @@ class LocalWhisperEngine(
                         )
                     }
                     onStatus("Translating through backend")
-                    translator.translate(raw)
+                    translator.translate(raw, recentSegments.toList())
                 }
+                rememberSegment(raw)
                 val translatedAt = System.currentTimeMillis()
                 val stage = if (translateToEnglish) CaptionStage.Source else CaptionStage.Translation
                 val phase = if (translateToEnglish) "source-final" else "translated-final"
@@ -156,5 +158,14 @@ class LocalWhisperEngine(
     companion object {
         private const val TAG = "SubStreamLocal"
         private const val SILENCE_RMS = 0.005f
+    }
+
+    private fun rememberSegment(text: String) {
+        val cleaned = text.trim().take(300)
+        if (cleaned.isBlank()) return
+        recentSegments.addLast(cleaned)
+        while (recentSegments.size > 2) {
+            recentSegments.removeFirst()
+        }
     }
 }

@@ -68,6 +68,81 @@ function fullscreenElement() {
   return document.fullscreenElement || document.webkitFullscreenElement || null;
 }
 
+function isEditableTarget(target) {
+  const element = target instanceof Element ? target : target && target.parentElement;
+  if (!element) return false;
+  return !!element.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]');
+}
+
+function preferredFullscreenTarget() {
+  const video = trackedVideo || pickPrimaryVideo();
+  if (!video) return null;
+  return video.closest('#movie_player, .html5-video-player, ytd-player, .html5-video-container') || video;
+}
+
+function callFullscreenMethod(target, methodNames) {
+  for (const name of methodNames) {
+    const method = target && target[name];
+    if (typeof method !== 'function') continue;
+    try {
+      const result = method.call(target);
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+      return true;
+    } catch (e) {}
+  }
+  return false;
+}
+
+function requestVideoFullscreen() {
+  const target = preferredFullscreenTarget();
+  if (!target) return false;
+  return callFullscreenMethod(target, ['requestFullscreen', 'webkitRequestFullscreen', 'msRequestFullscreen']) ||
+    callFullscreenMethod(document.documentElement, ['requestFullscreen', 'webkitRequestFullscreen', 'msRequestFullscreen']);
+}
+
+function exitVideoFullscreen() {
+  return callFullscreenMethod(document, ['exitFullscreen', 'webkitExitFullscreen', 'msExitFullscreen']);
+}
+
+function toggleVideoFullscreen() {
+  if (fullscreenElement()) {
+    return exitVideoFullscreen();
+  }
+  return requestVideoFullscreen();
+}
+
+function requestBrowserFullscreenToggle() {
+  if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return false;
+  try {
+    chrome.runtime.sendMessage({ target: 'background', type: 'browserFullscreen:toggle' }, (response) => {
+      if (chrome.runtime.lastError || !response || !response.ok) {
+        toggleVideoFullscreen();
+      }
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function shouldHandleFullscreenShortcut(event) {
+  if (!event || event.defaultPrevented) return false;
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  if (String(event.key || '').toLowerCase() !== 'f') return false;
+  if (isEditableTarget(event.target)) return false;
+  if (!overlayEl || !document.documentElement.classList.contains('kami-subs-active')) return false;
+  return !!(trackedVideo || pickPrimaryVideo());
+}
+
+function handleFullscreenShortcut(event) {
+  if (!shouldHandleFullscreenShortcut(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
+
+  if (!requestBrowserFullscreenToggle()) toggleVideoFullscreen();
+}
+
 function shouldUseNativeVideoSubtitle() {
   const fs = fullscreenElement();
   return !!(fs && fs.tagName && fs.tagName.toLowerCase() === 'video');
@@ -112,6 +187,7 @@ function relocateForFullscreen() {
 }
 document.addEventListener('fullscreenchange', relocateForFullscreen);
 document.addEventListener('webkitfullscreenchange', relocateForFullscreen);
+document.addEventListener('keydown', handleFullscreenShortcut, true);
 
 function applySettings(settings, sync) {
   currentSettings = { ...currentSettings, ...(settings || {}) };

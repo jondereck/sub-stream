@@ -78,6 +78,14 @@
               <option value="tr">Turkish</option>
             </select>
           </label>
+
+          <label>
+            Translation mode
+            <select id="translationMode">
+              <option value="auto" selected>Auto</option>
+              <option value="filipino_english">Filipino-English</option>
+            </select>
+          </label>
         </div>
       </section>
 
@@ -158,6 +166,7 @@
           <label>
             Transcription
             <select id="transcriber">
+              <option value="openai-realtime-translate">Realtime Translate (OpenAI)</option>
               <option value="openai-realtime" selected>Realtime Cloud (OpenAI)</option>
               <option value="openai-chunked">OpenAI Chunked</option>
               <option value="local">Local Whisper</option>

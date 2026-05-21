@@ -6,6 +6,7 @@ import ai.substream.android.data.OverlayPosition
 import ai.substream.android.data.SettingsStore
 import ai.substream.android.data.SubtitleMode
 import ai.substream.android.data.TranslationDisplayMode
+import ai.substream.android.data.TranslationMode
 import ai.substream.android.service.CaptureService
 import android.Manifest
 import android.app.Activity
@@ -196,9 +197,14 @@ private fun SubStreamScreen(
 
                 SettingsCard("Engine") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EngineChip("Realtime Translate", settings.engine == EngineMode.RealtimeTranslate) {
+                            onSettingsChange(settings.copy(engine = EngineMode.RealtimeTranslate))
+                        }
                         EngineChip("Cloud Realtime", settings.engine == EngineMode.CloudRealtime) {
                             onSettingsChange(settings.copy(engine = EngineMode.CloudRealtime))
                         }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         EngineChip("Local Whisper", settings.engine == EngineMode.LocalWhisper) {
                             onSettingsChange(settings.copy(engine = EngineMode.LocalWhisper))
                         }
@@ -285,6 +291,14 @@ private fun SubStreamScreen(
                 }
 
                 SettingsCard("Translation Display") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        EngineChip("Auto", settings.translationMode == TranslationMode.Auto) {
+                            onSettingsChange(settings.copy(translationMode = TranslationMode.Auto))
+                        }
+                        EngineChip("Filipino-English", settings.translationMode == TranslationMode.FilipinoEnglish) {
+                            onSettingsChange(settings.copy(translationMode = TranslationMode.FilipinoEnglish))
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         EngineChip("Replace", settings.translationDisplayMode == TranslationDisplayMode.TranslationReplace) {
                             onSettingsChange(settings.copy(translationDisplayMode = TranslationDisplayMode.TranslationReplace))

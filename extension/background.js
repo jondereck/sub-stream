@@ -12,6 +12,7 @@ const SYNC_MODE_MANUAL = 'manual';
 const SYNC_MODE_AUTO_LOCAL_WHISPER = 'auto_local_whisper';
 const LOCAL_WHISPER_ENGINE = 'local-whisper';
 const REALTIME_TRANSCRIBER = 'openai-realtime';
+const REALTIME_TRANSLATE_TRANSCRIBER = 'openai-realtime-translate';
 const OPENAI_CHUNKED_TRANSCRIBER = 'openai-chunked';
 const MIN_AUTO_STEP_CHANGE_MS = 200;
 const MIN_CALIBRATION_SAMPLES = 8;
@@ -30,6 +31,7 @@ let syncMetrics = emptySyncMetrics();
 let activeSettings = null;
 let activeCalibrationKey = null;
 let activeCalibrationProfile = null;
+const previousWindowStates = new Map();
 
 function setAppState(nextState) {
   appState = nextState;
@@ -95,6 +97,7 @@ function timelineAutoSyncEnabled(settings) {
     (
       settings.transcriber === 'local' ||
       settings.transcriber === REALTIME_TRANSCRIBER ||
+      settings.transcriber === REALTIME_TRANSLATE_TRANSCRIBER ||
       settings.transcriber === OPENAI_CHUNKED_TRANSCRIBER
     )
   );
@@ -295,7 +298,10 @@ async function writeUsage(usage) {
 }
 
 async function startAiUsage(settings) {
-  if ((settings && settings.transcriber) !== 'openai-realtime') {
+  if (
+    (settings && settings.transcriber) !== REALTIME_TRANSCRIBER &&
+    (settings && settings.transcriber) !== REALTIME_TRANSLATE_TRANSCRIBER
+  ) {
     await stopAiUsage();
     return;
   }
@@ -319,6 +325,21 @@ async function resetAiUsage() {
   await writeUsage(next);
 }
 
+async function toggleBrowserFullscreen(windowId) {
+  if (!windowId) throw new Error('No active browser window found.');
+  const win = await chrome.windows.get(windowId);
+  if (win.state === 'fullscreen') {
+    const previousState = previousWindowStates.get(windowId) || 'maximized';
+    previousWindowStates.delete(windowId);
+    await chrome.windows.update(windowId, { state: previousState });
+    return previousState;
+  }
+
+  previousWindowStates.set(windowId, win.state === 'minimized' ? 'normal' : (win.state || 'normal'));
+  await chrome.windows.update(windowId, { state: 'fullscreen' });
+  return 'fullscreen';
+}
+
 async function getAiUsageSnapshot() {
   return usageSnapshot(await readUsage());
 }
@@ -331,7 +352,7 @@ async function getActiveSettings() {
 }
 
 async function addActiveAiUsage(activeMs, transcriber) {
-  if (transcriber !== 'openai-realtime') return;
+  if (transcriber !== REALTIME_TRANSCRIBER && transcriber !== REALTIME_TRANSLATE_TRANSCRIBER) return;
   const ms = Math.max(0, Number(activeMs) || 0);
   if (!ms) return;
   const usage = await readUsage();
@@ -472,6 +493,7 @@ async function ensureBackend(settings) {
     showSourceFirst: typeof settings.showSourceFirst === 'boolean' ? settings.showSourceFirst : undefined,
     translationDisplayMode: settings.translationDisplayMode || undefined,
     translationGraceMs: settings.translationGraceMs || undefined,
+    translationMode: settings.translationMode || undefined,
   };
   backendState = 'starting';
   try {
@@ -618,7 +640,7 @@ async function applySettings(settings, restartRequired) {
   recomputeSyncMetrics(activeSettings);
   if (!isCapturing || !restartRequired) {
     if (isCapturing) {
-      if (settings.transcriber === 'openai-realtime') {
+      if (settings.transcriber === REALTIME_TRANSCRIBER || settings.transcriber === REALTIME_TRANSLATE_TRANSCRIBER) {
         const usage = await readUsage();
         if (!usage.currentSessionActive) await startAiUsage(settings);
       } else {
@@ -709,6 +731,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'aiUsage:addActiveMs': {
           await addActiveAiUsage(msg.activeMs, msg.transcriber);
           sendResponse({ ok: true });
+          break;
+        }
+        case 'browserFullscreen:toggle': {
+          const nextState = await toggleBrowserFullscreen(sender && sender.tab && sender.tab.windowId);
+          sendResponse({ ok: true, state: nextState });
           break;
         }
         case 'capture:updateSettings': {

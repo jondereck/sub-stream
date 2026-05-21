@@ -321,6 +321,7 @@ button.stop .spinner {
 .settings input[type="text"],
 .settings input[type="password"],
 .settings input[type="number"],
+.settings textarea,
 .advanced input[type="text"],
 .advanced input[type="password"],
 .advanced input[type="number"] {
@@ -334,8 +335,15 @@ button.stop .spinner {
   font-size: 12px;
 }
 
+.settings textarea {
+  min-height: 68px;
+  resize: vertical;
+  line-height: 1.35;
+}
+
 .settings select:disabled,
 .settings input:disabled,
+.settings textarea:disabled,
 .advanced input:disabled,
 .inline-reset:disabled,
 .api-key-actions button:disabled {

@@ -26,6 +26,7 @@ class SettingsStore(private val context: Context) {
         val ShowSourceFirst = booleanPreferencesKey("show_source_first")
         val TranslationDisplayMode = stringPreferencesKey("translation_display_mode")
         val TranslationGraceMs = longPreferencesKey("translation_grace_ms")
+        val TranslationMode = stringPreferencesKey("translation_mode")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
@@ -42,6 +43,7 @@ class SettingsStore(private val context: Context) {
             showSourceFirst = prefs[Keys.ShowSourceFirst] ?: true,
             translationDisplayMode = TranslationDisplayMode.fromWire(prefs[Keys.TranslationDisplayMode]),
             translationGraceMs = prefs[Keys.TranslationGraceMs] ?: 200L,
+            translationMode = TranslationMode.fromWire(prefs[Keys.TranslationMode]),
         )
     }
 
@@ -59,6 +61,7 @@ class SettingsStore(private val context: Context) {
             prefs[Keys.ShowSourceFirst] = settings.showSourceFirst
             prefs[Keys.TranslationDisplayMode] = settings.translationDisplayMode.wireValue
             prefs[Keys.TranslationGraceMs] = settings.translationGraceMs
+            prefs[Keys.TranslationMode] = settings.translationMode.wireValue
         }
     }
 }

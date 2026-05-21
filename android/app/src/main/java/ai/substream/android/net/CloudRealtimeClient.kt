@@ -3,6 +3,7 @@ package ai.substream.android.net
 import ai.substream.android.data.AppSettings
 import ai.substream.android.data.CaptionStage
 import ai.substream.android.data.CaptionUpdate
+import ai.substream.android.data.EngineMode
 import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -39,13 +40,14 @@ class CloudRealtimeClient(
                     .put("sampleRate", sampleRate)
                     .put("sourceLang", settings.sourceLang)
                     .put("targetLang", settings.targetLang)
+                    .put("translationMode", settings.translationMode.wireValue)
                     .put("task", "translate")
                     .put("realtimeLatency", settings.subtitleMode.wireValue)
                     .put("partialEmitEnabled", settings.subtitleMode.partialTranslationEnabled)
                     .put("showSourceFirst", settings.showSourceFirst)
                     .put("translationDisplayMode", settings.translationDisplayMode.wireValue)
-                    .put("translationGraceMs", settings.translationGraceMs)
-                    .put("transcriber", "openai-realtime")
+                    .put("translationGraceMs", settings.realtimeTranslationGraceMs())
+                    .put("transcriber", settings.engine.transcriberWireValue())
                 webSocket.send(config.toString())
                 onStatus("Cloud connected")
             }
@@ -141,5 +143,21 @@ class CloudRealtimeClient(
 
     companion object {
         private const val TAG = "SubStreamCloud"
+    }
+}
+
+private fun EngineMode.transcriberWireValue(): String {
+    return when (this) {
+        EngineMode.RealtimeTranslate -> "openai-realtime-translate"
+        EngineMode.CloudRealtime -> "openai-realtime"
+        EngineMode.LocalWhisper -> "local"
+    }
+}
+
+private fun AppSettings.realtimeTranslationGraceMs(): Long {
+    return if (engine == EngineMode.RealtimeTranslate) {
+        minOf(translationGraceMs, 75L)
+    } else {
+        translationGraceMs
     }
 }

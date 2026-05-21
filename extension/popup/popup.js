@@ -14,6 +14,7 @@ const els = {
   resetUsage: $('resetUsage'),
   sourceLang: $('sourceLang'),
   targetLang: $('targetLang'),
+  translationMode: $('translationMode'),
   fontSize: $('fontSize'),
   fontSizeVal: $('fontSizeVal'),
   position: $('position'),
@@ -50,9 +51,10 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 14,
+  settingsVersion: 16,
   sourceLang: 'auto',
   targetLang: 'en',
+  translationMode: 'auto',
   fontSize: 28,
   position: 'bottom',
   subtitleDelayMs: 0,
@@ -101,6 +103,7 @@ const SUBTITLE_MODE_PROFILES = {
 const LIVE_SETTINGS = new Set([
   'sourceLang',
   'targetLang',
+  'translationMode',
   'fontSize',
   'position',
   'subtitleDelayMs',
@@ -120,6 +123,7 @@ const RESTART_SETTINGS = new Set(['model', 'device']);
 const SETTING_FIELDS = [
   'sourceLang',
   'targetLang',
+  'translationMode',
   'fontSize',
   'position',
   'subtitleDelay',
@@ -144,8 +148,10 @@ const MAX_SUBTITLE_OFFSET_MS = 10000;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
 const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
+const TRANSLATION_MODES = new Set(['auto', 'filipino_english']);
 const MIN_TRANSLATION_GRACE_MS = 0;
 const MAX_TRANSLATION_GRACE_MS = 2000;
+const REALTIME_TRANSCRIBERS = new Set(['openai-realtime', 'openai-realtime-translate']);
 
 let currentSettings = null;
 let apiKeyInfo = { configured: false, source: null };
@@ -157,6 +163,14 @@ function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'
 
 function translatorForTranscriber(transcriber) {
   return 'openai';
+}
+
+function isRealtimeTranscriber(transcriber) {
+  return REALTIME_TRANSCRIBERS.has(transcriber);
+}
+
+function realtimeStatusLabel(transcriber) {
+  return transcriber === 'openai-realtime-translate' ? 'Realtime Translate' : 'Realtime Cloud';
 }
 
 function normalizeSubtitleMode(value) {
@@ -227,6 +241,11 @@ function clampSubtitleDurationMs(ms) {
 function normalizeTranslationDisplayMode(value) {
   const mode = String(value || DEFAULTS.translationDisplayMode).trim().toLowerCase();
   return TRANSLATION_DISPLAY_MODES.has(mode) ? mode : DEFAULTS.translationDisplayMode;
+}
+
+function normalizeTranslationMode(value) {
+  const mode = String(value || DEFAULTS.translationMode).trim().toLowerCase().replace(/-/g, '_');
+  return TRANSLATION_MODES.has(mode) ? mode : DEFAULTS.translationMode;
 }
 
 function clampTranslationGraceMs(ms) {
@@ -315,6 +334,7 @@ async function loadSettings() {
   }
   s.translator = translatorForTranscriber(s.transcriber);
   s.realtimeLatency = normalizeSubtitleMode(s.realtimeLatency);
+  s.translationMode = normalizeTranslationMode(s.translationMode);
   if (!Object.prototype.hasOwnProperty.call(saved, 'subtitleDelayMs') && Number.isFinite(Number(saved.audioDelayMs))) {
     s.subtitleDelayMs = saved.audioDelayMs;
   }
@@ -340,6 +360,7 @@ async function loadSettings() {
   s.settingsVersion = DEFAULTS.settingsVersion;
   els.sourceLang.value = s.sourceLang;
   els.targetLang.value = s.targetLang;
+  els.translationMode.value = s.translationMode;
   els.fontSize.value = s.fontSize;
   els.fontSizeVal.textContent = s.fontSize;
   els.position.value = s.position;
@@ -374,6 +395,7 @@ function readSettingsFromForm() {
     settingsVersion: DEFAULTS.settingsVersion,
     sourceLang: els.sourceLang.value,
     targetLang: els.targetLang.value,
+    translationMode: normalizeTranslationMode(els.translationMode.value),
     fontSize: parseInt(els.fontSize.value, 10),
     position: els.position.value,
     subtitleDelayMs: clampSubtitleDelayMs(els.subtitleDelay.value),
@@ -458,15 +480,17 @@ function apiKeySourceText(info = apiKeyInfo) {
 }
 
 function renderModeStatus(res = {}) {
-  if (res.isCapturing && currentSettings && currentSettings.transcriber === 'openai-realtime') {
-    if (res.wsState === 'connected') return setModeStatus('Realtime connected', 'ready');
-    if (res.wsState === 'error' || res.wsState === 'closed') return setModeStatus('Realtime connection failed', 'error');
+  if (res.isCapturing && currentSettings && isRealtimeTranscriber(currentSettings.transcriber)) {
+    const label = realtimeStatusLabel(currentSettings.transcriber);
+    if (res.wsState === 'connected') return setModeStatus(`${label} connected`, 'ready');
+    if (res.wsState === 'error' || res.wsState === 'closed') return setModeStatus(`${label} connection failed`, 'error');
   }
 
   if (!currentSettings) return setModeStatus('Checking engine...', 'idle');
-  if (currentSettings.transcriber === 'openai-realtime') {
+  if (isRealtimeTranscriber(currentSettings.transcriber)) {
+    const label = realtimeStatusLabel(currentSettings.transcriber);
     return apiKeyInfo.configured
-      ? setModeStatus('Realtime Cloud ready', 'ready')
+      ? setModeStatus(`${label} ready`, 'ready')
       : setModeStatus('API key required', 'warn');
   }
   if (currentSettings.transcriber === 'openai-chunked') {
@@ -506,7 +530,7 @@ function renderSessionState(res) {
 
   if (appState === 'starting') {
     setToggleLoading('Starting...', false);
-    setStatus(currentSettings && currentSettings.transcriber === 'openai-realtime' ? 'Connecting to Realtime...' : (res.backendState === 'starting' ? 'Connecting to backend...' : 'Capturing tab audio...'), 'starting');
+    setStatus(currentSettings && isRealtimeTranscriber(currentSettings.transcriber) ? 'Connecting to Realtime...' : (res.backendState === 'starting' ? 'Connecting to backend...' : 'Capturing tab audio...'), 'starting');
     return;
   }
   if (appState === 'stopping') {
@@ -588,7 +612,7 @@ async function refreshApiKeyStatus() {
     };
     els.apiKeyStatus.textContent = apiKeySourceText(apiKeyInfo);
     if (loadedSettingsVersion > 0 && loadedSettingsVersion < 9 && currentSettings) {
-      const nextTranscriber = apiKeyInfo.configured ? 'openai-realtime' : 'local';
+      const nextTranscriber = apiKeyInfo.configured ? DEFAULTS.transcriber : 'local';
       if (currentSettings.transcriber !== nextTranscriber) {
         els.transcriber.value = nextTranscriber;
         await saveSettings();
@@ -686,7 +710,7 @@ async function clearApiKey() {
 setInterval(refresh, 1000);
 
 async function onToggle() {
-  if (['openai-realtime', 'openai-chunked'].includes(els.transcriber.value) && !apiKeyInfo.configured) {
+  if ([...REALTIME_TRANSCRIBERS, 'openai-chunked'].includes(els.transcriber.value) && !apiKeyInfo.configured) {
     els.transcriber.value = 'local';
     showToast('Using Local Whisper fallback', 'error');
   }
@@ -771,7 +795,7 @@ els.realtimeLatency.addEventListener('change', () => {
 els.partialEmitEnabled.addEventListener('change', () => {
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
-['sourceLang', 'targetLang'].forEach((key) => {
+['sourceLang', 'targetLang', 'translationMode'].forEach((key) => {
   els[key].addEventListener('change', () => {
     saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
   });

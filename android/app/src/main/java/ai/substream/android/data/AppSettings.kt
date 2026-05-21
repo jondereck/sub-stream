@@ -2,6 +2,7 @@ package ai.substream.android.data
 
 enum class EngineMode(val wireValue: String) {
     CloudRealtime("cloud-realtime"),
+    RealtimeTranslate("realtime-translate"),
     LocalWhisper("local-whisper");
 
     companion object {
@@ -43,6 +44,18 @@ enum class TranslationDisplayMode(val wireValue: String) {
         fun fromWire(value: String?) = when (value?.lowercase()) {
             "translation_dual" -> TranslationDual
             else -> TranslationReplace
+        }
+    }
+}
+
+enum class TranslationMode(val wireValue: String) {
+    Auto("auto"),
+    FilipinoEnglish("filipino_english");
+
+    companion object {
+        fun fromWire(value: String?) = when (value?.lowercase()?.replace("-", "_")) {
+            "filipino_english" -> FilipinoEnglish
+            else -> Auto
         }
     }
 }
@@ -89,6 +102,7 @@ data class AppSettings(
     val showSourceFirst: Boolean = true,
     val translationDisplayMode: TranslationDisplayMode = TranslationDisplayMode.TranslationReplace,
     val translationGraceMs: Long = 200L,
+    val translationMode: TranslationMode = TranslationMode.Auto,
 ) {
     val translateUrl: String
         get() = backendUrl.replace(Regex("/ws$"), "/translate").replace("ws://", "http://").replace("wss://", "https://")
