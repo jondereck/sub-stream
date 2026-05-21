@@ -209,16 +209,24 @@ const positionButtons = Array.from(document.querySelectorAll('[data-position]'))
 const SELECT_LABELS = {
   sourceLang: {
     auto: 'Auto',
+    ar: 'Arabic',
     en: 'English',
     es: 'Spanish',
     fr: 'French',
     de: 'German',
     fil: 'Filipino',
+    hi: 'Hindi',
+    id: 'Indonesian',
+    it: 'Italian',
     ja: 'Japanese',
     ko: 'Korean',
-    zh: 'Chinese',
+    ms: 'Malay',
+    pt: 'Portuguese',
+    ru: 'Russian',
+    th: 'Thai',
     tr: 'Turkish',
-    hi: 'Hindi',
+    vi: 'Vietnamese',
+    zh: 'Chinese',
   },
   targetLang: {
     ar: 'Arabic',
@@ -227,7 +235,18 @@ const SELECT_LABELS = {
     fr: 'French',
     de: 'German',
     fil: 'Filipino',
+    hi: 'Hindi',
+    id: 'Indonesian',
+    it: 'Italian',
+    ja: 'Japanese',
+    ko: 'Korean',
+    ms: 'Malay',
+    pt: 'Portuguese',
+    ru: 'Russian',
+    th: 'Thai',
     tr: 'Turkish',
+    vi: 'Vietnamese',
+    zh: 'Chinese',
   },
   translationMode: {
     auto: 'Auto',
@@ -380,6 +399,17 @@ function enhanceSelect(select) {
     const itemText = document.createElement('span');
     itemText.textContent = optionLabel(select, option);
     item.append(itemBadge, itemText);
+    if (option.dataset.help) {
+      item.title = option.dataset.help;
+      const itemHint = document.createElement('span');
+      itemHint.className = 'custom-select-hint';
+      itemHint.textContent = '?';
+      itemHint.setAttribute('aria-label', option.dataset.help);
+      const itemHelp = document.createElement('small');
+      itemHelp.className = 'custom-select-option-help';
+      itemHelp.textContent = option.dataset.help;
+      item.append(itemHint, itemHelp);
+    }
     item.addEventListener('click', () => {
       select.value = option.value;
       select.dispatchEvent(new Event('change', { bubbles: true }));
