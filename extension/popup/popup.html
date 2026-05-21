@@ -11,7 +11,7 @@
         <header class="app-header">
           <div class="brand-mark" aria-hidden="true">SS</div>
           <div class="brand-copy">
-            <h1>Sub Stream AI <span aria-hidden="true">*</span></h1>
+            <h1>Sub Stream AI <svg class="title-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 9.5 9.5 2 13l7.5 3.5L13 24l3.5-7.5L24 13l-7.5-3.5L13 2Z" fill="currentColor"></path></svg></h1>
             <p class="tagline">Live translated captions</p>
           </div>
           <div id="status" class="status idle">Ready</div>
@@ -20,28 +20,21 @@
         <section class="hero-card">
           <div class="hero-copy">
             <button id="toggle" class="primary" type="button">
-              <span aria-hidden="true">></span>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5-13-7.5Z" fill="currentColor"></path></svg>
               <span>Start Captions</span>
             </button>
-            <div class="api-row">
-              <div>
-                <h2><span aria-hidden="true">Key</span> API key required</h2>
-                <p>Add your API key to begin live translation.</p>
-              </div>
-              <button id="openApiKey" class="outline-key" type="button">Add API Key</button>
-            </div>
-            <div id="modeStatus" class="mode-status idle">Checking engine...</div>
           </div>
-          <div class="wave" aria-hidden="true">
+          <div id="audioWave" class="wave idle" aria-hidden="true">
             <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
           </div>
         </section>
 
+        <div id="modeStatus" class="mode-status idle" hidden>Checking engine...</div>
         <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
         <section class="card">
           <div class="section-title">
-            <span class="icon" aria-hidden="true">o</span>
+            <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"></path></svg></span>
             <h2>Languages</h2>
           </div>
           <div class="settings language-grid">
@@ -94,60 +87,10 @@
           </div>
         </section>
 
-        <section class="card caption-card">
-          <div class="section-title">
-            <span class="cc" aria-hidden="true">CC</span>
-            <h2>Caption Display</h2>
-          </div>
-          <div class="settings caption-grid">
-            <label>
-              Font size <span id="fontSizeVal">28</span>px
-              <input type="range" id="fontSize" min="14" max="56" step="2" value="28" />
-            </label>
-
-            <label>
-              Position
-              <select id="position">
-                <option value="bottom" selected>Bottom</option>
-                <option value="middle">Middle</option>
-                <option value="top">Top</option>
-              </select>
-            </label>
-
-            <label>
-              Visible duration <span id="subtitleDurationVal">2.6s</span>
-              <input type="range" id="subtitleDuration" min="1200" max="8000" step="100" value="2600" />
-              <span class="field-help">Controls how long each shown subtitle stays readable.</span>
-            </label>
-
-            <label>
-              Translation display
-              <select id="translationDisplayMode">
-                <option value="translation_replace" selected>Replace source with translation</option>
-                <option value="translation_dual">Source + translation</option>
-              </select>
-            </label>
-
-            <label class="wide">
-              <span class="setting-row">
-                <span>Manual offset <span id="subtitleDelayVal">0.0s</span></span>
-                <button id="resetSubtitleDelay" class="inline-reset" type="button">Reset to 0.0s</button>
-              </span>
-              <input type="range" id="subtitleDelay" min="-10000" max="10000" step="100" value="0" />
-              <span class="field-help">Range -10.0s to +10.0s. Adjusts subtitle timing only.</span>
-            </label>
-
-            <label class="checkbox-setting">
-              <input type="checkbox" id="showSourceFirst" checked />
-              <span>Show source transcript first</span>
-            </label>
-          </div>
-        </section>
-
         <section class="card usage-panel">
           <div class="section-title row-between">
             <div>
-              <span class="money" aria-hidden="true">$</span>
+              <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><line x1="12" x2="12" y1="2" y2="22"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"></path></svg></span>
               <h2>Usage & Cost</h2>
             </div>
             <button id="resetUsage" class="text-btn" type="button">Reset stats</button>
@@ -169,24 +112,94 @@
           <p id="usageMeta" class="usage-meta">Realtime active audio only</p>
         </section>
 
+        <section class="card caption-card">
+          <div class="section-title">
+            <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M9 10H8a2 2 0 0 0 0 4h1"></path><path d="M16 10h-1a2 2 0 0 0 0 4h1"></path></svg></span>
+            <h2>Caption Display</h2>
+          </div>
+          <div class="settings caption-grid">
+            <label class="wide">
+              Font size <span id="fontSizeVal">28</span>px
+              <input type="range" id="fontSize" min="14" max="56" step="2" value="28" />
+            </label>
+
+            <label class="position-setting wide">
+              Position
+              <select id="position" class="segment-source" tabindex="-1" aria-hidden="true">
+                <option value="bottom" selected>Bottom</option>
+                <option value="middle">Middle</option>
+                <option value="top">Top</option>
+              </select>
+              <span class="position-segment" role="group" aria-label="Caption position">
+                <button type="button" data-position="top">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect><path d="M8 9h8"></path><path d="M8 13h5"></path></svg>
+                  <span>Top</span>
+                </button>
+                <button type="button" data-position="middle">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect><path d="M8 12h8"></path></svg>
+                  <span>Middle</span>
+                </button>
+                <button type="button" data-position="bottom">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect><path d="M8 15h8"></path><path d="M8 11h5"></path></svg>
+                  <span>Bottom</span>
+                </button>
+              </span>
+            </label>
+
+            <label class="wide">
+              Visible duration <span id="subtitleDurationVal">2.6s</span>
+              <input type="range" id="subtitleDuration" min="1200" max="8000" step="100" value="2600" />
+              <span class="field-help">Controls how long each shown subtitle stays readable.</span>
+            </label>
+
+            <label class="display-style-setting wide">
+              Display style
+              <select id="translationDisplayMode" class="segment-source" tabindex="-1" aria-hidden="true">
+                <option value="translation_replace" selected>Replace source with translation</option>
+                <option value="translation_dual">Source + translation</option>
+              </select>
+              <span class="display-segment" role="group" aria-label="Display style">
+                <button type="button" data-display-mode="translation_replace">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect><path d="M9 9h6"></path><path d="M9 13h4"></path></svg>
+                  <span>Replace original</span>
+                </button>
+                <button type="button" data-display-mode="translation_dual">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"></rect><path d="M8 10h3"></path><path d="M13 10h3"></path><path d="M8 14h3"></path><path d="M13 14h3"></path></svg>
+                  <span>Show both</span>
+                </button>
+              </span>
+            </label>
+
+            <label class="wide">
+              <span class="setting-row">
+                <span>Manual offset <span id="subtitleDelayVal">0.0s</span></span>
+                <button id="resetSubtitleDelay" class="inline-reset" type="button">Reset to 0.0s</button>
+              </span>
+              <input type="range" id="subtitleDelay" min="-10000" max="10000" step="100" value="0" />
+              <span class="field-help">Range -10.0s to +10.0s. Adjusts subtitle timing only.</span>
+            </label>
+
+          </div>
+        </section>
+
         <button id="advancedToggle" class="card advanced-summary" type="button" aria-expanded="false" aria-controls="advancedPanel">
-          <span class="gear" aria-hidden="true">*</span>
+          <span class="gear" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 0 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.1.38.4.7.75.86.24.1.5.14.76.14H21a2 2 0 0 1 0 4h-.09c-.66 0-1.26.4-1.51 1Z"></path></svg></span>
           <span>
             <strong>Advanced Settings</strong>
             <small>Latency, buffering, backend and developer options</small>
           </span>
-          <span class="chev" aria-hidden="true">v</span>
+          <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"></path></svg></span>
         </button>
       </section>
 
       <section id="advancedPanel" class="shell advanced-panel" aria-label="Advanced settings" hidden>
         <header class="adv-header">
-          <span class="gear large" aria-hidden="true">*</span>
+          <span class="gear large" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 0 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 0 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 0 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.1.38.4.7.75.86.24.1.5.14.76.14H21a2 2 0 0 1 0 4h-.09c-.66 0-1.26.4-1.51 1Z"></path></svg></span>
           <div>
             <h1>Advanced Settings</h1>
             <p>Fine tune performance and behavior.</p>
           </div>
-          <button id="collapseAdvanced" class="icon-btn collapse" type="button" aria-label="Collapse advanced settings">^</button>
+          <button id="collapseAdvanced" class="icon-btn collapse" type="button" aria-label="Collapse advanced settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"></path></svg></button>
         </header>
 
         <section class="adv-card">
@@ -305,6 +318,11 @@
         <section class="adv-card">
           <h2>Translation Behavior</h2>
           <div class="settings">
+            <label class="checkbox-setting">
+              <input type="checkbox" id="showSourceFirst" checked />
+              <span>Show source transcript first</span>
+            </label>
+
             <label class="checkbox-setting">
               <input type="checkbox" id="partialEmitEnabled" checked disabled />
               <span>Partial translation updates</span>

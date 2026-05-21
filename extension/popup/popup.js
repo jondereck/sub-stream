@@ -6,6 +6,7 @@ const els = {
   toggle: $('toggle'),
   status: $('status'),
   modeStatus: $('modeStatus'),
+  audioWave: $('audioWave'),
   toast: $('toast'),
   usageSession: $('usageSession'),
   usageToday: $('usageToday'),
@@ -166,22 +167,73 @@ let loadedSettingsVersion = 0;
 let toastTimer = null;
 let saveDebounceTimer = null;
 
-const LANGUAGE_BADGES = {
-  auto: '🌐',
-  ar: '🇸🇦',
-  de: '🇩🇪',
-  en: '🇺🇸',
-  es: '🇪🇸',
-  fil: '🇵🇭',
-  fr: '🇫🇷',
-  hi: '🇮🇳',
-  ja: '🇯🇵',
-  ko: '🇰🇷',
-  tr: '🇹🇷',
-  zh: '🇨🇳',
+const FLAG_ASSETS = {
+  ar: 'assets/flags/sa.svg',
+  de: 'assets/flags/de.svg',
+  en: 'assets/flags/us.svg',
+  es: 'assets/flags/es.svg',
+  fil: 'assets/flags/ph.svg',
+  fr: 'assets/flags/fr.svg',
+  hi: 'assets/flags/in.svg',
+  ja: 'assets/flags/jp.svg',
+  ko: 'assets/flags/kr.svg',
+  tr: 'assets/flags/tr.svg',
+  zh: 'assets/flags/cn.svg',
+};
+
+const TEXT_BADGES = {
+  auto: 'AI',
+  bottom: 'B',
+  middle: 'M',
+  top: 'T',
+  translation_replace: '1',
+  translation_dual: '2',
+  manual: 'M',
+  auto_local_whisper: 'A',
+  openai: 'AI',
+  'openai-realtime': 'AI',
+  'openai-realtime-translate': 'AI',
+  'openai-chunked': 'AI',
+  local: 'L',
+  cuda: 'GPU',
+  cpu: 'CPU',
 };
 
 const CUSTOM_SELECTS = new Map();
+
+const PLAY_ICON = '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5-13-7.5Z" fill="currentColor"></path></svg>';
+const STOP_ICON = '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect></svg>';
+const displayModeButtons = Array.from(document.querySelectorAll('[data-display-mode]'));
+const positionButtons = Array.from(document.querySelectorAll('[data-position]'));
+
+const SELECT_LABELS = {
+  sourceLang: {
+    auto: 'Auto',
+    en: 'English',
+    es: 'Spanish',
+    fr: 'French',
+    de: 'German',
+    fil: 'Filipino',
+    ja: 'Japanese',
+    ko: 'Korean',
+    zh: 'Chinese',
+    tr: 'Turkish',
+    hi: 'Hindi',
+  },
+  targetLang: {
+    ar: 'Arabic',
+    en: 'English',
+    es: 'Spanish',
+    fr: 'French',
+    de: 'German',
+    fil: 'Filipino',
+    tr: 'Turkish',
+  },
+  translationMode: {
+    auto: 'Auto',
+    filipino_english: 'Fil-En',
+  },
+};
 
 function setAdvancedOpen(open, focusApiKey = false) {
   if (!els.advancedPanel || !els.advancedToggle) return;
@@ -197,34 +249,65 @@ function setAdvancedOpen(open, focusApiKey = false) {
 
 function updateLanguageBadges() {
   if (els.sourceLangIcon) {
-    els.sourceLangIcon.textContent = LANGUAGE_BADGES[els.sourceLang.value] || els.sourceLang.value.slice(0, 2).toUpperCase();
+    renderBadge(els.sourceLangIcon, badgeForValue(els.sourceLang.value));
   }
   if (els.targetLangIcon) {
-    els.targetLangIcon.textContent = LANGUAGE_BADGES[els.targetLang.value] || els.targetLang.value.slice(0, 2).toUpperCase();
+    renderBadge(els.targetLangIcon, badgeForValue(els.targetLang.value));
   }
   if (els.translationModeIcon) {
-    els.translationModeIcon.textContent = els.translationMode.value === 'filipino_english' ? '🇵🇭' : '*';
+    renderBadge(els.translationModeIcon, els.translationMode.value === 'filipino_english' ? badgeForValue('fil') : textBadge('AI'));
   }
   syncCustomSelects();
 }
 
+function textBadge(text) {
+  return { text };
+}
+
+function flagBadge(src) {
+  return { src };
+}
+
+function badgeForValue(value) {
+  if (FLAG_ASSETS[value]) return flagBadge(FLAG_ASSETS[value]);
+  return textBadge(TEXT_BADGES[value] || String(value || '').slice(0, 2).toUpperCase());
+}
+
+function renderBadge(element, badge) {
+  element.textContent = '';
+  element.classList.toggle('has-flag', Boolean(badge && badge.src));
+  if (!badge) return;
+  if (badge.src) {
+    const img = document.createElement('img');
+    img.src = badge.src;
+    img.alt = '';
+    img.loading = 'eager';
+    element.appendChild(img);
+    return;
+  }
+  element.textContent = badge.text || '';
+}
+
 function optionBadge(select, option) {
   if (select.id === 'sourceLang' || select.id === 'targetLang') {
-    return LANGUAGE_BADGES[option.value] || option.value.slice(0, 2).toUpperCase();
+    return badgeForValue(option.value);
   }
-  if (select.id === 'translationMode') return option.value === 'filipino_english' ? '🇵🇭' : '*';
-  if (select.id === 'position') {
-    if (option.value === 'top') return '↑';
-    if (option.value === 'middle') return '•';
-    return '↓';
+  if (select.id === 'translationMode') return option.value === 'filipino_english' ? badgeForValue('fil') : textBadge('AI');
+  if (select.id === 'position') return textBadge(TEXT_BADGES[option.value] || '');
+  if (select.id === 'translationDisplayMode') return textBadge(TEXT_BADGES[option.value] || '');
+  if (select.id === 'syncMode') return textBadge(option.value === 'manual' ? 'M' : 'A');
+  if (select.id === 'transcriber') return textBadge(TEXT_BADGES[option.value] || 'AI');
+  if (select.id === 'realtimeLatency') return textBadge(option.value.slice(0, 1).toUpperCase());
+  if (select.id === 'model') return textBadge(option.value.slice(0, 1).toUpperCase());
+  if (select.id === 'device') return textBadge(TEXT_BADGES[option.value] || '');
+  return null;
+}
+function optionLabel(select, option) {
+  const labels = SELECT_LABELS[select.id];
+  if (labels && Object.prototype.hasOwnProperty.call(labels, option.value)) {
+    return labels[option.value];
   }
-  if (select.id === 'translationDisplayMode') return option.value === 'translation_dual' ? '2' : '1';
-  if (select.id === 'syncMode') return option.value === 'manual' ? 'M' : 'A';
-  if (select.id === 'transcriber') return option.value === 'local' ? 'L' : 'AI';
-  if (select.id === 'realtimeLatency') return option.value.slice(0, 1).toUpperCase();
-  if (select.id === 'model') return option.value.slice(0, 1).toUpperCase();
-  if (select.id === 'device') return option.value === 'cuda' ? 'GPU' : 'CPU';
-  return '';
+  return option.textContent.trim();
 }
 
 function selectedOption(select) {
@@ -244,10 +327,10 @@ function syncCustomSelect(select) {
   const parts = CUSTOM_SELECTS.get(select);
   if (!parts) return;
   const option = selectedOption(select);
-  const badge = option ? optionBadge(select, option) : '';
-  parts.badge.textContent = badge;
+  const badge = option ? optionBadge(select, option) : null;
+  renderBadge(parts.badge, badge);
   parts.badge.hidden = !badge;
-  parts.text.textContent = option ? option.textContent.trim() : '';
+  parts.text.textContent = option ? optionLabel(select, option) : '';
   parts.button.disabled = select.disabled;
   parts.root.classList.toggle('disabled', select.disabled);
   parts.options.forEach((item) => {
@@ -278,7 +361,6 @@ function enhanceSelect(select) {
   const arrow = document.createElement('span');
   arrow.className = 'custom-select-arrow';
   arrow.setAttribute('aria-hidden', 'true');
-  arrow.textContent = 'v';
   button.append(badge, text, arrow);
 
   const list = document.createElement('div');
@@ -293,10 +375,10 @@ function enhanceSelect(select) {
     const itemBadge = document.createElement('span');
     itemBadge.className = 'custom-select-badge';
     const badgeValue = optionBadge(select, option);
-    itemBadge.textContent = badgeValue;
+    renderBadge(itemBadge, badgeValue);
     itemBadge.hidden = !badgeValue;
     const itemText = document.createElement('span');
-    itemText.textContent = option.textContent.trim();
+    itemText.textContent = optionLabel(select, option);
     item.append(itemBadge, itemText);
     item.addEventListener('click', () => {
       select.value = option.value;
@@ -324,10 +406,30 @@ function enhanceSelect(select) {
 }
 
 function enhanceSelects() {
-  document.querySelectorAll('select').forEach(enhanceSelect);
+  document.querySelectorAll('select:not(.segment-source)').forEach(enhanceSelect);
   document.addEventListener('click', () => closeCustomSelects());
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeCustomSelects();
+  });
+}
+
+function syncDisplayModeButtons() {
+  const value = normalizeTranslationDisplayMode(els.translationDisplayMode.value);
+  displayModeButtons.forEach((button) => {
+    const active = button.dataset.displayMode === value;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+    button.disabled = els.translationDisplayMode.disabled;
+  });
+}
+
+function syncPositionButtons() {
+  const value = els.position.value || DEFAULTS.position;
+  positionButtons.forEach((button) => {
+    const active = button.dataset.position === value;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+    button.disabled = els.position.disabled;
   });
 }
 
@@ -475,7 +577,7 @@ function updateSyncMetrics(sync) {
 function showToast(message, kind = 'ok') {
   if (toastTimer) clearTimeout(toastTimer);
   els.toast.textContent = message;
-  els.toast.className = 'toast' + (kind === 'error' ? ' error' : '');
+  els.toast.className = 'toast' + (kind === 'error' ? ' error' : '') + (kind === 'warn' ? ' warn' : '');
   els.toast.hidden = false;
   toastTimer = setTimeout(() => {
     els.toast.hidden = true;
@@ -536,12 +638,14 @@ async function loadSettings() {
   els.fontSize.value = s.fontSize;
   els.fontSizeVal.textContent = s.fontSize;
   els.position.value = s.position;
+  syncPositionButtons();
   els.subtitleDelay.value = s.subtitleDelayMs;
   els.subtitleDelayVal.textContent = formatSubtitleDelay(s.subtitleDelayMs);
   els.subtitleDuration.value = s.subtitleDurationMs;
   els.subtitleDurationVal.textContent = formatSubtitleDuration(s.subtitleDurationMs);
   els.showSourceFirst.checked = s.showSourceFirst;
   els.translationDisplayMode.value = s.translationDisplayMode;
+  syncDisplayModeButtons();
   els.translationGraceMs.value = s.translationGraceMs;
   els.syncMode.value = s.syncMode;
   els.transcriber.value = s.transcriber;
@@ -640,8 +744,20 @@ function setStatus(text, kind) {
 }
 
 function setModeStatus(text, kind = 'idle') {
+  if (!els.modeStatus) return;
   els.modeStatus.textContent = text;
   els.modeStatus.className = 'mode-status ' + kind;
+}
+
+function requiresApiKey(transcriber) {
+  return [...REALTIME_TRANSCRIBERS, 'openai-chunked'].includes(transcriber);
+}
+
+function updateWaveState(state, level = 0.18) {
+  if (!els.audioWave) return;
+  const safeLevel = Math.max(0.12, Math.min(1, Number(level) || 0.18));
+  els.audioWave.className = 'wave ' + state;
+  els.audioWave.style.setProperty('--wave-level', safeLevel.toFixed(2));
 }
 
 function apiKeySourceText(info = apiKeyInfo) {
@@ -693,6 +809,8 @@ function setControlsDisabled(disabled) {
     if (els[key]) els[key].disabled = key === 'partialEmitEnabled' ? true : disabled;
   });
   els.resetSubtitleDelay.disabled = disabled;
+  syncDisplayModeButtons();
+  syncPositionButtons();
   syncCustomSelects();
 }
 
@@ -703,39 +821,55 @@ function renderSessionState(res) {
   renderModeStatus(res);
 
   if (appState === 'starting') {
+    updateWaveState('starting', 0.36);
     setToggleLoading('Starting...', false);
     setStatus(currentSettings && isRealtimeTranscriber(currentSettings.transcriber) ? 'Connecting to Realtime...' : (res.backendState === 'starting' ? 'Connecting to backend...' : 'Capturing tab audio...'), 'starting');
     return;
   }
   if (appState === 'stopping') {
+    updateWaveState('starting', 0.28);
     setToggleLoading('Stopping...', true);
     setStatus('Stopping session...', 'starting');
     return;
   }
   if (appState === 'applying_settings' || res.wsState === 'applying') {
+    updateWaveState('starting', 0.3);
     setToggleLoading('Applying...', true);
     setStatus('Applying settings...', 'starting');
     return;
   }
 
   els.toggle.disabled = false;
-  els.toggle.innerHTML = res.isCapturing ? 'Stop Captions' : '<span aria-hidden="true">&gt;</span><span>Start Captions</span>';
+  els.toggle.innerHTML = res.isCapturing ? `${STOP_ICON}<span>Stop Captions</span>` : `${PLAY_ICON}<span>Start Captions</span>`;
   els.toggle.classList.toggle('stop', !!res.isCapturing);
 
   if (res.isCapturing) {
     switch (res.wsState) {
-      case 'connected':  setStatus('Status: Streaming', 'live'); break;
-      case 'connecting': setStatus('Status: Connecting', 'starting'); break;
+      case 'connected':
+        updateWaveState('live', 0.72);
+        setStatus('Status: Streaming', 'live');
+        break;
+      case 'connecting':
+        updateWaveState('starting', 0.38);
+        setStatus('Status: Connecting', 'starting');
+        break;
       case 'error':
-      case 'closed':     setStatus('Status: Backend offline', 'error'); break;
-      default:           setStatus('Status: Capturing tab audio', 'starting');
+      case 'closed':
+        updateWaveState('error', 0.22);
+        setStatus('Status: Backend offline', 'error');
+        break;
+      default:
+        updateWaveState('starting', 0.45);
+        setStatus('Status: Capturing tab audio', 'starting');
     }
     return;
   }
 
   if (res.backendState === 'error') {
+    updateWaveState('error', 0.16);
     setStatus(shortBackendError(res.backendInfo), 'error');
   } else {
+    updateWaveState('idle', 0.18);
     setStatus('Status: Idle', 'idle');
   }
 }
@@ -884,9 +1018,10 @@ async function clearApiKey() {
 setInterval(refresh, 1000);
 
 async function onToggle() {
-  if ([...REALTIME_TRANSCRIBERS, 'openai-chunked'].includes(els.transcriber.value) && !apiKeyInfo.configured) {
+  if (requiresApiKey(els.transcriber.value) && !apiKeyInfo.configured) {
     els.transcriber.value = 'local';
-    showToast('Using Local Whisper fallback', 'error');
+    syncCustomSelect(els.transcriber);
+    showToast('OpenAI mode needs an API key. Using Local Whisper fallback.', 'warn');
   }
   const settings = await saveSettings();
   const status = await chrome.runtime.sendMessage({ target: 'background', type: 'capture:status' });
@@ -939,7 +1074,15 @@ els.showSourceFirst.addEventListener('change', () => {
 });
 els.translationDisplayMode.addEventListener('change', () => {
   els.translationDisplayMode.value = normalizeTranslationDisplayMode(els.translationDisplayMode.value);
+  syncDisplayModeButtons();
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+});
+displayModeButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    els.translationDisplayMode.value = normalizeTranslationDisplayMode(button.dataset.displayMode);
+    els.translationDisplayMode.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 });
 els.translationGraceMs.addEventListener('change', () => {
   els.translationGraceMs.value = clampTranslationGraceMs(els.translationGraceMs.value);
@@ -954,7 +1097,15 @@ els.resetSubtitleDelay.addEventListener('click', () => {
   saveAndBroadcastSettings({ restartRequired: false, force: true }).catch(() => {});
 });
 els.position.addEventListener('change', () => {
+  syncPositionButtons();
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
+});
+positionButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    els.position.value = button.dataset.position || DEFAULTS.position;
+    els.position.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 });
 els.realtimeLatency.addEventListener('change', () => {
   els.realtimeLatency.value = normalizeSubtitleMode(els.realtimeLatency.value);
@@ -977,7 +1128,11 @@ els.partialEmitEnabled.addEventListener('change', () => {
 });
 ['transcriber', 'backendUrl'].forEach((key) => {
   els[key].addEventListener('change', () => {
-    showToast('Applying new settings...');
+    if (key === 'transcriber' && requiresApiKey(els.transcriber.value) && !apiKeyInfo.configured) {
+      showToast('OpenAI features need an API key. Add it in Advanced Settings > API Key.', 'warn');
+    } else {
+      showToast('Applying new settings...');
+    }
     debounceSettingsApply(false);
   });
 });
@@ -994,9 +1149,11 @@ els.advancedToggle.addEventListener('click', () => {
 els.collapseAdvanced.addEventListener('click', () => {
   setAdvancedOpen(false);
 });
-els.openApiKey.addEventListener('click', () => {
-  setAdvancedOpen(true, true);
-});
+if (els.openApiKey) {
+  els.openApiKey.addEventListener('click', () => {
+    setAdvancedOpen(true, true);
+  });
+}
 els.resetUsage.addEventListener('click', async () => {
   const res = await chrome.runtime.sendMessage({ target: 'background', type: 'aiUsage:reset' });
   if (res && res.aiUsage) updateUsage(res.aiUsage);
@@ -1004,6 +1161,8 @@ els.resetUsage.addEventListener('click', async () => {
 els.saveApiKey.addEventListener('click', saveApiKey);
 els.testApiKey.addEventListener('click', testApiKey);
 els.clearApiKey.addEventListener('click', clearApiKey);
+
+enhanceSelects();
 
 loadSettings().then(async () => {
   await refresh();
