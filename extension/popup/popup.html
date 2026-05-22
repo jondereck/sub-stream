@@ -240,8 +240,8 @@
             <label>
               Transcription
               <select id="transcriber">
-                <option value="openai-realtime-translate" data-help="Direct OpenAI realtime translation. Usually fastest cloud path, needs API key and quota.">Realtime Translate (OpenAI)</option>
-                <option value="openai-realtime" selected data-help="OpenAI realtime transcription with app/backend translation flow. Good default for live captions.">Realtime Cloud (OpenAI)</option>
+                <option value="openai-realtime-translate" selected data-help="Direct OpenAI realtime translation. Usually fastest cloud path, needs API key and quota.">Realtime Translate (OpenAI)</option>
+                <option value="openai-realtime" data-help="OpenAI realtime transcription with app/backend translation flow. Good default for live captions.">Realtime Cloud (OpenAI)</option>
                 <option value="openai-chunked" data-help="Sends short audio chunks to OpenAI speech-to-text. More stable fallback, usually more delay.">OpenAI Chunked</option>
                 <option value="local" data-help="Runs Whisper on this computer. No OpenAI API cost, speed depends on your CPU/GPU.">Local Whisper</option>
               </select>
@@ -250,8 +250,8 @@
             <label>
               Subtitle mode
               <select id="realtimeLatency">
-                <option value="fast">Fast</option>
-                <option value="balanced" selected>Balanced</option>
+                <option value="fast" selected>Fast</option>
+                <option value="balanced">Balanced</option>
                 <option value="accurate">Accurate</option>
               </select>
               <span class="field-help">Fast is immediate, Balanced adds a small delay, Accurate waits for cleaner context.</span>
@@ -267,7 +267,7 @@
                 Audio chunk window (ms)
                 <small>Lower sends audio sooner. Higher gives the transcriber more context.</small>
               </span>
-              <input type="number" id="chunkDurationMs" min="250" max="5000" step="50" value="650" />
+              <input type="number" id="chunkDurationMs" min="250" max="5000" step="50" value="300" />
             </label>
 
             <label class="setting-split">
@@ -275,7 +275,7 @@
                 Max audio buffer (ms)
                 <small>Higher can smooth audio bursts but may feel late.</small>
               </span>
-              <input type="number" id="maxBufferMs" min="250" max="10000" step="50" value="900" />
+              <input type="number" id="maxBufferMs" min="250" max="10000" step="50" value="450" />
             </label>
 
             <label class="setting-split">
@@ -283,12 +283,12 @@
                 VAD silence wait (ms)
                 <small>Lower ends speech segments faster.</small>
               </span>
-              <input type="number" id="vadSilenceMs" min="150" max="2000" step="50" value="350" />
+              <input type="number" id="vadSilenceMs" min="150" max="2000" step="50" value="220" />
             </label>
 
             <label>
               Translation grace (ms)
-              <input type="number" id="translationGraceMs" min="0" max="2000" step="50" value="200" />
+              <input type="number" id="translationGraceMs" min="0" max="2000" step="50" value="100" />
             </label>
           </div>
         </section>
@@ -360,7 +360,7 @@
                 Translation flush wait (ms)
                 <small>Lower translates shorter fragments sooner.</small>
               </span>
-              <input type="number" id="translationFlushMs" min="150" max="3000" step="50" value="450" />
+              <input type="number" id="translationFlushMs" min="150" max="3000" step="50" value="180" />
             </label>
           </div>
         </section>

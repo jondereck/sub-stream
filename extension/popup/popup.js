@@ -59,7 +59,7 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 16,
+  settingsVersion: 17,
   sourceLang: 'auto',
   targetLang: 'en',
   translationMode: 'auto',
@@ -69,16 +69,16 @@ const DEFAULTS = {
   subtitleDurationMs: 2600,
   showSourceFirst: true,
   translationDisplayMode: 'translation_replace',
-  translationGraceMs: 200,
+  translationGraceMs: 100,
   syncMode: 'auto',
-  transcriber: 'openai-realtime',
+  transcriber: 'openai-realtime-translate',
   backendUrl: 'ws://127.0.0.1:8765/ws',
-  realtimeLatency: 'balanced',
-  chunkDurationMs: 650,
-  maxBufferMs: 900,
-  vadSilenceMs: 350,
+  realtimeLatency: 'fast',
+  chunkDurationMs: 300,
+  maxBufferMs: 450,
+  vadSilenceMs: 220,
   partialEmitEnabled: true,
-  translationFlushMs: 450,
+  translationFlushMs: 180,
   task: 'translate',
   model: 'base',
   device: 'cpu',
@@ -86,11 +86,11 @@ const DEFAULTS = {
 
 const SUBTITLE_MODE_PROFILES = {
   fast: {
-    chunkDurationMs: 450,
-    maxBufferMs: 650,
-    vadSilenceMs: 250,
+    chunkDurationMs: 300,
+    maxBufferMs: 450,
+    vadSilenceMs: 220,
     partialEmitEnabled: true,
-    translationFlushMs: 250,
+    translationFlushMs: 180,
   },
   balanced: {
     chunkDurationMs: 650,
@@ -953,6 +953,20 @@ async function refreshApiKeyStatus() {
       const nextTranscriber = apiKeyInfo.configured ? DEFAULTS.transcriber : 'local';
       if (currentSettings.transcriber !== nextTranscriber) {
         els.transcriber.value = nextTranscriber;
+        syncCustomSelect(els.transcriber);
+        await saveSettings();
+      }
+      loadedSettingsVersion = DEFAULTS.settingsVersion;
+    } else if (
+      loadedSettingsVersion > 0 &&
+      loadedSettingsVersion < 17 &&
+      apiKeyInfo.configured &&
+      currentSettings &&
+      currentSettings.transcriber === 'openai-realtime'
+    ) {
+      if (els.transcriber.value !== DEFAULTS.transcriber) {
+        els.transcriber.value = DEFAULTS.transcriber;
+        syncCustomSelect(els.transcriber);
         await saveSettings();
       }
       loadedSettingsVersion = DEFAULTS.settingsVersion;

@@ -13,9 +13,10 @@ const DEFAULT_SUBTITLE_DURATION_MS = 2600;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
 const DEFAULT_TRANSLATION_DISPLAY_MODE = 'translation_replace';
-const DEFAULT_TRANSLATION_GRACE_MS = 200;
+const DEFAULT_TRANSLATION_GRACE_MS = 100;
 const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
 const MAX_SUBTITLE_QUEUE_ITEMS = 80;
+const STALE_TRANSLATION_REPLACEMENT_GRACE_MS = 250;
 const EPOCH_SECONDS_THRESHOLD = 1000000000;
 const SUBTITLE_MODE_DELAYS_MS = {
   fast: 0,
@@ -28,6 +29,7 @@ let textEl = null;
 let errorTimer = null;
 let activeSubtitle = null;
 let subtitleQueue = [];
+let newestSourceSegmentStartTs = 0;
 let renderLoopId = null;
 let trackedVideo = null;
 let resizeObserver = null;
@@ -431,6 +433,7 @@ function hideSubtitleText() {
 function clearPendingSubtitle() {
   activeSubtitle = null;
   subtitleQueue = [];
+  newestSourceSegmentStartTs = 0;
   hideSubtitleText();
 }
 
@@ -447,6 +450,25 @@ function isTranslationItem(item) {
 
 function isSourceItem(item) {
   return !!item && item.stage !== 'translation';
+}
+
+function rememberNewestSource(items) {
+  for (const item of items) {
+    if (!isSourceItem(item)) continue;
+    newestSourceSegmentStartTs = Math.max(newestSourceSegmentStartTs, Number(item.segmentStartTs) || 0);
+  }
+}
+
+function isStaleTranslationGroup(items, queuedMatches) {
+  if (!items.length || !isTranslationItem(items[0])) return false;
+  const hasMatchingSource =
+    (activeSubtitle && activeSubtitle.groupId === items[0].groupId && isSourceItem(activeSubtitle)) ||
+    queuedMatches.some(isSourceItem);
+  if (hasMatchingSource) return false;
+
+  const incomingStart = Number(items[0].segmentStartTs) || 0;
+  return newestSourceSegmentStartTs > 0 &&
+    incomingStart + STALE_TRANSLATION_REPLACEMENT_GRACE_MS < newestSourceSegmentStartTs;
 }
 
 function segmentGroupId(msg, segmentStartTs, segmentEndTs) {
@@ -570,6 +592,18 @@ function enqueueSubtitleItems(items) {
   const queuedMatches = subtitleQueue.filter((item) => item.groupId === groupId);
   const matchedActive = !!(activeSubtitle && activeSubtitle.groupId === groupId);
   const matchedQueued = queuedMatches.length > 0;
+
+  if (incomingIsTranslation && isStaleTranslationGroup(items, queuedMatches)) {
+    console.debug('[sub-stream-ai overlay] dropped stale translation', {
+      segmentId: items[0].segmentId || groupId,
+      chunkId: items[0].chunkId,
+      newestSourceSegmentStartTs,
+      segmentStartTs: items[0].segmentStartTs,
+    });
+    return;
+  }
+
+  if (incomingIsSource) rememberNewestSource(items);
 
   if (incomingIsTranslation) {
     console.debug('[sub-stream-ai overlay] matched segment', {

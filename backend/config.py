@@ -63,17 +63,17 @@ MAX_CHUNK_LAG_S = float(os.getenv("KAMI_MAX_LAG_S", "2.0"))
 
 # Low-latency pipeline knobs. These are also accepted per WebSocket session
 # from the extension popup, so users can tune without changing audio playback.
-CHUNK_DURATION_MS = int(os.getenv("SUBSTREAM_CHUNK_DURATION_MS", "650"))
-MAX_BUFFER_MS = int(os.getenv("SUBSTREAM_MAX_BUFFER_MS", "900"))
-VAD_SILENCE_MS = int(os.getenv("SUBSTREAM_VAD_SILENCE_MS", "350"))
+CHUNK_DURATION_MS = int(os.getenv("SUBSTREAM_CHUNK_DURATION_MS", "300"))
+MAX_BUFFER_MS = int(os.getenv("SUBSTREAM_MAX_BUFFER_MS", "450"))
+VAD_SILENCE_MS = int(os.getenv("SUBSTREAM_VAD_SILENCE_MS", "220"))
 PARTIAL_EMIT_ENABLED = os.getenv("SUBSTREAM_PARTIAL_EMIT_ENABLED", "true").lower() in ("1", "true", "yes")
-TRANSLATION_FLUSH_MS = int(os.getenv("SUBSTREAM_TRANSLATION_FLUSH_MS", "450"))
+TRANSLATION_FLUSH_MS = int(os.getenv("SUBSTREAM_TRANSLATION_FLUSH_MS", "180"))
 
 # Two-stage subtitle display. Source transcript is shown first by default,
 # then the matching translation replaces it or appears as a second line.
 SHOW_SOURCE_FIRST = os.getenv("SUBSTREAM_SHOW_SOURCE_FIRST", "true").lower() in ("1", "true", "yes")
 TRANSLATION_DISPLAY_MODE = os.getenv("SUBSTREAM_TRANSLATION_DISPLAY_MODE", "translation_replace").strip().lower()
-TRANSLATION_GRACE_MS = int(os.getenv("SUBSTREAM_TRANSLATION_GRACE_MS", "200"))
+TRANSLATION_GRACE_MS = int(os.getenv("SUBSTREAM_TRANSLATION_GRACE_MS", "100"))
 
 # Optional shared token for Android clients. Leave empty for local/dev use.
 MOBILE_TOKEN = os.getenv("SUBSTREAM_MOBILE_TOKEN", "")
