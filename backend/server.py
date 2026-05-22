@@ -39,7 +39,7 @@ from functools import partial
 from pathlib import Path
 from statistics import mean
 from threading import Lock
-from typing import Deque, Optional
+from typing import Deque, List, Optional, Union
 
 # Make pip-installed NVIDIA libs discoverable by ctranslate2 on Windows.
 # Without this, faster-whisper crashes with "cublas64_12.dll not found"
@@ -184,8 +184,8 @@ class TranslateRequest(BaseModel):
     targetLang: str = "ar"
     token: Optional[str] = None
     translationMode: str = "auto"
-    glossaryTerms: list[str] | str | None = None
-    contextSegments: list[str] | None = None
+    glossaryTerms: Optional[Union[List[str], str]] = None
+    contextSegments: Optional[List[str]] = None
 
 
 class TranslateResponse(BaseModel):
@@ -2309,37 +2309,22 @@ def realtime_translate_instructions(session: Session) -> str:
 
 def realtime_translate_session_update(session: Session) -> dict:
     input_audio: dict = {
-        "format": {
-            "type": "audio/pcm",
-            "rate": REALTIME_SAMPLE_RATE,
-        },
-        "turn_detection": {
-            "type": "server_vad",
-            "threshold": 0.5,
-            "prefix_padding_ms": 180,
-            "silence_duration_ms": safe_int_range(session.vad_silence_ms, VAD_SILENCE_MS, 150, 2000),
-            "create_response": True,
-            "interrupt_response": True,
-        },
         "noise_reduction": {
             "type": "near_field",
         },
     }
     if session.show_source_first:
         transcription: dict[str, str] = {"model": OPENAI_REALTIME_TRANSCRIBE_MODEL}
-        if session.source_lang and session.source_lang != "auto":
-            transcription["language"] = session.source_lang
         input_audio["transcription"] = transcription
 
     return {
         "type": "session.update",
         "session": {
-            "type": "realtime",
-            "model": OPENAI_REALTIME_TRANSLATE_MODEL,
-            "output_modalities": ["text"],
-            "instructions": realtime_translate_instructions(session),
             "audio": {
                 "input": input_audio,
+                "output": {
+                    "language": session.target_lang,
+                },
             },
         },
     }
@@ -3126,7 +3111,7 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                             len(msg["bytes"]),
                         )
                         await upstream.send(json.dumps({
-                            "type": "input_audio_buffer.append",
+                            "type": "session.input_audio_buffer.append",
                             "audio": base64.b64encode(msg["bytes"]).decode("ascii"),
                         }))
                     elif "text" in msg and msg["text"]:
@@ -3163,6 +3148,7 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                         continue
                     event_type = event.get("type")
                     if event_type in (
+                        "session.input_transcript.delta",
                         "conversation.item.input_audio_transcription.delta",
                         "response.input_audio_transcription.delta",
                         "input_audio_transcription.delta",
@@ -3179,6 +3165,8 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                             delta=delta,
                         )
                     elif event_type in (
+                        "session.input_transcript.done",
+                        "session.input_transcript.completed",
                         "conversation.item.input_audio_transcription.completed",
                         "conversation.item.input_audio_transcription.done",
                         "response.input_audio_transcription.done",
@@ -3188,6 +3176,7 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                         if final:
                             source_text = final
                     elif event_type in (
+                        "session.output_transcript.delta",
                         "response.output_text.delta",
                         "response.text.delta",
                         "response.audio_transcript.delta",
@@ -3205,6 +3194,8 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                             delta=delta,
                         )
                     elif event_type in (
+                        "session.output_transcript.done",
+                        "session.output_transcript.completed",
                         "response.output_text.done",
                         "response.text.done",
                         "response.audio_transcript.done",
