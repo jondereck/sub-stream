@@ -553,14 +553,15 @@ async function startCapture(tabId, settings) {
       throw new Error(message);
     }
 
-    await ensureOffscreen();
-
     // Make sure the overlay is mounted before we start sending transcripts.
-    try {
-      await ensureContentScript(tabId);
-    } catch (e) {
-      console.warn('[sub-stream-ai] could not inject content script (restricted page?):', e);
-    }
+    await ensureContentScript(tabId);
+    await chrome.tabs.sendMessage(tabId, {
+      type: 'overlay:mount',
+      settings,
+      sync: recomputeSyncMetrics(settings)
+    });
+
+    await ensureOffscreen();
 
     const streamId = await new Promise((resolve, reject) => {
     chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (id) => {
@@ -581,19 +582,19 @@ async function startCapture(tabId, settings) {
     wsState = 'connecting';
     await chrome.storage.local.set({ isCapturing: true, activeTabId: tabId });
     await startAiUsage(settings);
-
-    // Tell the content script in that tab to mount the overlay
-    try {
-      await chrome.tabs.sendMessage(tabId, {
-        type: 'overlay:mount',
-        settings,
-        sync: recomputeSyncMetrics(settings)
-      });
-    } catch (e) {
-      console.warn('[sub-stream-ai] could not message content script yet:', e);
-    }
     setAppState('running');
   } catch (e) {
+    if (await hasOffscreenDocument()) {
+      try {
+        await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop' });
+      } catch (_) { /* ignore cleanup failure */ }
+    }
+    await stopAiUsage();
+    stopBackend();
+    isCapturing = false;
+    wsState = 'idle';
+    activeTabId = null;
+    await chrome.storage.local.set({ isCapturing: false, activeTabId: null });
     setAppState('error');
     throw e;
   }
@@ -690,10 +691,10 @@ async function applySettings(settings, restartRequired) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || (msg.target && msg.target !== 'background')) return false;
+
   (async () => {
     try {
-      if (msg.target && msg.target !== 'background') return;
-
       switch (msg.type) {
         case 'capture:start': {
           const tab = msg.tabId
@@ -762,6 +763,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               });
             } catch (e) { /* ignore */ }
           }
+          sendResponse({ ok: true });
           break;
         }
         case 'transcript': {
@@ -800,6 +802,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               });
             } catch (e) { /* ignore */ }
           }
+          sendResponse({ ok: true });
           break;
         }
         case 'backend:error': {
@@ -813,8 +816,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               });
             } catch (e) { /* ignore */ }
           }
+          sendResponse({ ok: true });
           break;
         }
+        default:
+          sendResponse({ ok: false, error: 'Unknown background message.' });
+          break;
       }
     } catch (err) {
       const message = errorMessage(err, 'Sub Stream failed.');

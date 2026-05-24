@@ -162,7 +162,7 @@ const MAX_TRANSLATION_GRACE_MS = 2000;
 const REALTIME_TRANSCRIBERS = new Set(['openai-realtime', 'openai-realtime-translate']);
 
 let currentSettings = null;
-let apiKeyInfo = { configured: false, source: null };
+let apiKeyInfo = { configured: false, source: null, checked: false };
 let loadedSettingsVersion = 0;
 let toastTimer = null;
 let saveDebounceTimer = null;
@@ -791,11 +791,16 @@ function updateWaveState(state, level = 0.18) {
 }
 
 function apiKeySourceText(info = apiKeyInfo) {
+  if (!info.checked) return 'Backend offline';
   if (!info.configured) return 'API key required';
   const masked = info.masked ? ` (${info.masked})` : '';
   if (info.source === '.env' || info.source === 'env') return `.env key active${masked}`;
   if (info.source === 'saved_settings' || info.source === 'stored') return `Saved key active${masked}`;
   return `API key active${masked}`;
+}
+
+function confirmedMissingApiKey() {
+  return apiKeyInfo.checked && !apiKeyInfo.configured;
 }
 
 function renderModeStatus(res = {}) {
@@ -808,11 +813,13 @@ function renderModeStatus(res = {}) {
   if (!currentSettings) return setModeStatus('Checking engine...', 'idle');
   if (isRealtimeTranscriber(currentSettings.transcriber)) {
     const label = realtimeStatusLabel(currentSettings.transcriber);
+    if (!apiKeyInfo.checked) return setModeStatus('Backend offline', 'warn');
     return apiKeyInfo.configured
       ? setModeStatus(`${label} ready`, 'ready')
       : setModeStatus('API key required', 'warn');
   }
   if (currentSettings.transcriber === 'openai-chunked') {
+    if (!apiKeyInfo.checked) return setModeStatus('Backend offline', 'warn');
     return apiKeyInfo.configured
       ? setModeStatus('OpenAI Chunked ready', 'ready')
       : setModeStatus('API key required', 'warn');
@@ -947,6 +954,7 @@ async function refreshApiKeyStatus() {
       configured: !!data.configured,
       source: data.source || null,
       masked: data.masked || null,
+      checked: true,
     };
     els.apiKeyStatus.textContent = apiKeySourceText(apiKeyInfo);
     if (loadedSettingsVersion > 0 && loadedSettingsVersion < 9 && currentSettings) {
@@ -973,7 +981,7 @@ async function refreshApiKeyStatus() {
     }
     renderModeStatus();
   } catch (e) {
-    apiKeyInfo = { configured: false, source: null };
+    apiKeyInfo = { configured: false, source: null, checked: false };
     els.apiKeyStatus.textContent = 'Backend offline';
     renderModeStatus();
   }
@@ -1023,6 +1031,7 @@ async function testApiKey() {
       configured: true,
       source: data.source || apiKeyInfo.source,
       masked: data.masked || apiKeyInfo.masked,
+      checked: true,
     };
     els.apiKeyStatus.textContent = data.message || 'Connection successful';
     showToast(data.message || 'Connection successful');
@@ -1045,6 +1054,7 @@ async function clearApiKey() {
       configured: !!data.configured,
       source: data.source || null,
       masked: data.masked || null,
+      checked: true,
     };
     els.apiKeyStatus.textContent = apiKeySourceText(apiKeyInfo);
     showToast(data.message || 'Saved API key cleared');
@@ -1062,7 +1072,7 @@ async function clearApiKey() {
 setInterval(refresh, 1000);
 
 async function onToggle() {
-  if (requiresApiKey(els.transcriber.value) && !apiKeyInfo.configured) {
+  if (requiresApiKey(els.transcriber.value) && confirmedMissingApiKey()) {
     els.transcriber.value = 'local';
     syncCustomSelect(els.transcriber);
     showToast('OpenAI mode needs an API key. Using Local Whisper fallback.', 'warn');
@@ -1172,7 +1182,7 @@ els.partialEmitEnabled.addEventListener('change', () => {
 });
 ['transcriber', 'backendUrl'].forEach((key) => {
   els[key].addEventListener('change', () => {
-    if (key === 'transcriber' && requiresApiKey(els.transcriber.value) && !apiKeyInfo.configured) {
+    if (key === 'transcriber' && requiresApiKey(els.transcriber.value) && confirmedMissingApiKey()) {
       showToast('OpenAI features need an API key. Add it in Advanced Settings > API Key.', 'warn');
     } else {
       showToast('Applying new settings...');

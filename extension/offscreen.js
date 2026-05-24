@@ -8,6 +8,7 @@ let audioContext = null;
 let sourceNode = null;
 let processorNode = null;
 let passthroughGain = null;
+let processorSink = null;
 let ws = null;
 let settings = null;
 let isRunning = false;          // true between start() and stop()
@@ -60,6 +61,45 @@ function resample(input, inputRate, targetRate) {
     out[i] = input[lo] * (1 - t) + input[hi] * t;
   }
   return out;
+}
+
+function handleInputAudio(mono) {
+  if (!isRunning || !audioContext) return;
+  const resampled = resample(mono, audioContext.sampleRate, targetSampleRate());
+
+  if (chunkBuffer.length === 0) {
+    chunkBufferStartTs = Date.now() / 1000;
+  }
+  chunkBuffer = concatFloat32(chunkBuffer, resampled);
+  sendChunkIfReady();
+}
+
+async function createAudioProcessorNode() {
+  if (audioContext.audioWorklet) {
+    await audioContext.audioWorklet.addModule(chrome.runtime.getURL('audio-worklet.js'));
+    const node = new AudioWorkletNode(audioContext, 'substream-audio-processor', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
+    node.port.onmessage = (event) => {
+      if (event.data instanceof Float32Array) {
+        handleInputAudio(event.data);
+      }
+    };
+    return node;
+  }
+
+  const node = audioContext.createScriptProcessor(1024, 2, 1);
+  node.onaudioprocess = (e) => {
+    const inBuf = e.inputBuffer;
+    const ch0 = inBuf.getChannelData(0);
+    const ch1 = inBuf.numberOfChannels > 1 ? inBuf.getChannelData(1) : ch0;
+    const mono = new Float32Array(ch0.length);
+    for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
+    handleInputAudio(mono);
+  };
+  return node;
 }
 
 function float32ToInt16(float32) {
@@ -389,28 +429,12 @@ async function start(streamId, incomingSettings) {
   sourceNode.connect(passthroughGain).connect(audioContext.destination);
 
   // Mono mixdown + buffer for realtime streaming or chunked send.
-  // ScriptProcessorNode is deprecated but works reliably in offscreen contexts
-  // without requiring an extra worklet file. Swap to AudioWorklet later if needed.
-  processorNode = audioContext.createScriptProcessor(1024, 2, 1);
-  processorNode.onaudioprocess = (e) => {
-    const inBuf = e.inputBuffer;
-    const ch0 = inBuf.getChannelData(0);
-    const ch1 = inBuf.numberOfChannels > 1 ? inBuf.getChannelData(1) : ch0;
-    const mono = new Float32Array(ch0.length);
-    for (let i = 0; i < ch0.length; i++) mono[i] = (ch0[i] + ch1[i]) * 0.5;
-    const resampled = resample(mono, audioContext.sampleRate, targetSampleRate());
-
-    if (chunkBuffer.length === 0) {
-      chunkBufferStartTs = Date.now() / 1000;
-    }
-    chunkBuffer = concatFloat32(chunkBuffer, resampled);
-    sendChunkIfReady();
-  };
+  processorNode = await createAudioProcessorNode();
   sourceNode.connect(processorNode);
   // Connect processor to destination with zero gain to keep it running without double audio.
-  const sink = audioContext.createGain();
-  sink.gain.value = 0;
-  processorNode.connect(sink).connect(audioContext.destination);
+  processorSink = audioContext.createGain();
+  processorSink.gain.value = 0;
+  processorNode.connect(processorSink).connect(audioContext.destination);
 
   openSocket();
 }
@@ -426,6 +450,7 @@ async function stop() {
   reconnectAttempts = 0;
 
   try { if (processorNode) processorNode.disconnect(); } catch (e) {}
+  try { if (processorSink) processorSink.disconnect(); } catch (e) {}
   try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
   try { if (passthroughGain) passthroughGain.disconnect(); } catch (e) {}
   try { if (audioContext) await audioContext.close(); } catch (e) {}
@@ -436,6 +461,7 @@ async function stop() {
   audioContext = null;
   sourceNode = null;
   processorNode = null;
+  processorSink = null;
   passthroughGain = null;
   ws = null;
   chunkBuffer = new Float32Array(0);
@@ -444,7 +470,7 @@ async function stop() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.target !== 'offscreen') return;
+  if (!msg || msg.target !== 'offscreen') return false;
   (async () => {
     try {
       if (msg.type === 'start') {
@@ -465,6 +491,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendConfig();
         }
         sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: 'Unknown offscreen message.' });
       }
     } catch (err) {
       console.error('[sub-stream-ai offscreen]', err);

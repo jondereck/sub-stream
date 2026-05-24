@@ -2487,6 +2487,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
             last_stable_at = 0.0
             last_stable_timing: Optional[AudioChunkTiming] = None
             translation_tasks_by_caption: dict[str, asyncio.Task] = {}
+            last_realtime_delta_at = 0.0
 
             def current_realtime_caption_id() -> str:
                 nonlocal realtime_caption_seq, active_caption_id
@@ -2656,7 +2657,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                 )
                 if should_merge:
                     caption_id = last_stable_caption_id
-                    source_text = merge_transcript_fragments(last_stable_source_text, source_text)
+                    source_text = merge_realtime_text_update(last_stable_source_text, source_text)
                     timing = AudioChunkTiming(
                         last_stable_timing.chunk_id,
                         last_stable_timing.start_ts,
@@ -2829,6 +2830,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                             pending_chunk_meta = cfg
 
             async def openai_to_browser() -> None:
+                nonlocal last_realtime_delta_at
                 async for raw in upstream:
                     try:
                         event = json.loads(raw)
@@ -2844,6 +2846,7 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         if not delta:
                             continue
                         delta_at = time.time()
+                        last_realtime_delta_at = delta_at
                         latest_chunk = realtime_timeline.chunks[-1] if realtime_timeline.chunks else None
                         latest_start = latest_chunk.start_ts if latest_chunk else delta_at
                         log.info(
@@ -2870,12 +2873,13 @@ async def handle_realtime_socket(ws: WebSocket, session: Session) -> None:
                         "response.audio_transcript.done",
                     ):
                         had_deltas = bool(raw_transcript_parts)
+                        had_recent_deltas = time.time() - last_realtime_delta_at < 2.0
                         text = event.get("transcript") or ""
                         raw_transcript_parts.clear()
                         log.info("openai realtime transcript completed chars=%d", len(text or ""))
                         if phrase_segmenter.has_pending:
                             await emit_stable_phrase(force=True, reason="completed")
-                        elif text and not had_deltas:
+                        elif text and not had_deltas and not had_recent_deltas:
                             phrase_segmenter.append(text, now=time.time())
                             await emit_source_preview(text)
                             await emit_stable_phrase(force=True, reason="completed")
@@ -2932,6 +2936,25 @@ def realtime_event_delta_text(event: dict) -> str:
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+def merge_realtime_text_update(previous: str, update: str) -> str:
+    previous = cleanup_transcript_text(previous)
+    update = cleanup_transcript_text(update)
+    if not previous:
+        return update
+    if not update or previous == update or previous.endswith(update):
+        return previous
+    if update.startswith(previous):
+        return update
+
+    previous_folded = previous.casefold()
+    update_folded = update.casefold()
+    max_overlap = min(len(previous), len(update))
+    for size in range(max_overlap, 0, -1):
+        if previous_folded[-size:] == update_folded[:size]:
+            return cleanup_transcript_text(previous + update[size:])
+    return cleanup_transcript_text(previous + " " + update)
 
 
 def realtime_event_final_text(event: dict) -> str:
@@ -3008,6 +3031,8 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
             source_text = ""
             translated_text = ""
             translation_started_at: Optional[float] = None
+            last_final_translation = ""
+            last_final_translation_at = 0.0
 
             def current_caption_id() -> str:
                 nonlocal caption_seq, active_caption_id, translation_started_at
@@ -3025,6 +3050,15 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                 source_text = ""
                 translated_text = ""
                 translation_started_at = None
+
+            def mark_final_translation(text: str) -> None:
+                nonlocal last_final_translation, last_final_translation_at
+                last_final_translation = cleanup_transcript_text(text)
+                last_final_translation_at = time.time()
+
+            def recently_emitted_final(text: str) -> bool:
+                final = cleanup_transcript_text(text)
+                return bool(final and final == last_final_translation and time.time() - last_final_translation_at < 2.0)
 
             async def send_realtime_translate_caption(
                 text: str,
@@ -3156,7 +3190,7 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                         delta = realtime_event_delta_text(event)
                         if not delta or not session.show_source_first:
                             continue
-                        source_text = cleanup_transcript_text(source_text + delta)
+                        source_text = merge_realtime_text_update(source_text, delta)
                         await send_realtime_translate_caption(
                             source_text,
                             stage="source",
@@ -3185,7 +3219,7 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                         delta = realtime_event_delta_text(event)
                         if not delta:
                             continue
-                        translated_text = cleanup_transcript_text(translated_text + delta)
+                        translated_text = merge_realtime_text_update(translated_text, delta)
                         await send_realtime_translate_caption(
                             translated_text,
                             stage="translation",
@@ -3210,9 +3244,11 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                                 phase="translated-final",
                                 is_final=True,
                             )
+                            mark_final_translation(translated_text)
+                            reset_caption()
                     elif event_type == "response.done":
                         final = cleanup_transcript_text(realtime_event_final_text(event))
-                        if final:
+                        if final and not recently_emitted_final(final):
                             translated_text = final
                             await send_realtime_translate_caption(
                                 translated_text,
@@ -3220,6 +3256,7 @@ async def handle_realtime_translate_socket(ws: WebSocket, session: Session) -> N
                                 phase="translated-final",
                                 is_final=True,
                             )
+                            mark_final_translation(translated_text)
                         reset_caption()
                     elif event_type in ("session.created", "session.updated"):
                         log.info("openai realtime translate event type=%s", event_type)
