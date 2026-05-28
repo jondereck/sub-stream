@@ -2,6 +2,8 @@
 // Coordinates: popup <-> offscreen (audio capture) <-> content (overlay)
 //             popup -> native host (spawns the Python backend)
 
+try { importScripts('subtitle-utils.js'); } catch (e) { /* loaded in tests without importScripts */ }
+
 const OFFSCREEN_DOC = 'offscreen.html';
 const NATIVE_HOST   = 'com.kamisubs.host';
 const AI_USAGE_KEY = 'aiUsageEstimate';
@@ -19,6 +21,9 @@ const MIN_CALIBRATION_SAMPLES = 8;
 const MIN_CALIBRATION_SAVE_CHANGE_S = 0.1;
 const MIN_SUBTITLE_OFFSET_MS = -10000;
 const MAX_SUBTITLE_OFFSET_MS = 10000;
+const IMPORTED_SUBTITLE_CACHE_KEY = 'substream.importedSubtitleCache.v1';
+const IMPORTED_SUBTITLE_BATCH_SIZE = 12;
+const IMPORTED_SUBTITLE_BATCH_CHAR_LIMIT = 1800;
 
 let activeTabId = null;
 let isCapturing = false;
@@ -400,7 +405,7 @@ async function ensureContentScript(tabId) {
   } catch (e) { /* ignore — may already be injected */ }
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
-    files: ['content.js']
+    files: ['subtitle-utils.js', 'content.js']
   });
 }
 
@@ -690,6 +695,146 @@ async function applySettings(settings, restartRequired) {
   }
 }
 
+function importedSubtitleCacheKey(fileHash, settings) {
+  const sourceLang = settings.sourceLang || 'auto';
+  const targetLang = settings.targetLang || 'en';
+  const model = settings.importedSubtitleModel || 'backend-openai';
+  return `${fileHash}:${sourceLang}:${targetLang}:${model}`;
+}
+
+async function readImportedSubtitleCache() {
+  const stored = await chrome.storage.local.get(IMPORTED_SUBTITLE_CACHE_KEY);
+  return stored[IMPORTED_SUBTITLE_CACHE_KEY] || {};
+}
+
+async function writeImportedSubtitleCache(cache) {
+  await chrome.storage.local.set({ [IMPORTED_SUBTITLE_CACHE_KEY]: cache });
+}
+
+function backendHttpBaseFromSettings(settings) {
+  try {
+    const url = new URL(settings.backendUrl || 'ws://127.0.0.1:8765/ws');
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch (e) {
+    return 'http://127.0.0.1:8765';
+  }
+}
+
+async function translateTextViaBackend(text, settings) {
+  const response = await fetch(`${backendHttpBaseFromSettings(settings)}/translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      sourceLang: settings.sourceLang || 'auto',
+      targetLang: settings.targetLang || 'en',
+      translationMode: settings.translationMode || 'auto',
+    }),
+  });
+  let data = {};
+  try { data = await response.json(); } catch (e) {}
+  if (!response.ok) throw new Error(errorMessage(data.detail || data.error, 'Backend translation failed.'));
+  return String(data.text || '').trim();
+}
+
+function makeSubtitleBatches(cues) {
+  const batches = [];
+  let batch = [];
+  let chars = 0;
+  for (const cue of cues) {
+    const textLength = (cue.originalText || '').length + 8;
+    if (
+      batch.length &&
+      (batch.length >= IMPORTED_SUBTITLE_BATCH_SIZE || chars + textLength > IMPORTED_SUBTITLE_BATCH_CHAR_LIMIT)
+    ) {
+      batches.push(batch);
+      batch = [];
+      chars = 0;
+    }
+    batch.push(cue);
+    chars += textLength;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+function buildBatchTranslationInput(batch) {
+  return batch.map((cue, index) => `${index + 1}. ${cue.originalText.replace(/\n+/g, ' / ')}`).join('\n');
+}
+
+function splitBatchTranslationOutput(output, expectedCount) {
+  const lines = String(output || '')
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*(?:\d+[\).\-\:]|\-\s*)\s*/, '').trim())
+    .filter(Boolean);
+  return lines.length === expectedCount ? lines : null;
+}
+
+async function translateSubtitleBatch(batch, settings) {
+  if (!batch.length) return [];
+  if (batch.length === 1) {
+    return [await translateTextViaBackend(batch[0].originalText, settings)];
+  }
+  const translatedBatch = await translateTextViaBackend(buildBatchTranslationInput(batch), settings);
+  const split = splitBatchTranslationOutput(translatedBatch, batch.length);
+  if (split) return split;
+  const translated = [];
+  for (const cue of batch) {
+    translated.push(await translateTextViaBackend(cue.originalText, settings));
+  }
+  return translated;
+}
+
+async function translateImportedSubtitleCues({ fileHash, cues, settings, force }) {
+  if (!fileHash) throw new Error('Subtitle file hash is missing.');
+  if (!Array.isArray(cues) || cues.length === 0) throw new Error('No subtitle cues to translate.');
+  const cacheKey = importedSubtitleCacheKey(fileHash, settings || {});
+  const cache = await readImportedSubtitleCache();
+  if (!force && cache[cacheKey] && Array.isArray(cache[cacheKey].cues)) {
+    return { cues: cache[cacheKey].cues, cacheHit: true, cacheKey };
+  }
+
+  const nextCues = cues.map((cue) => ({ ...cue, translatedText: cue.translatedText || '' }));
+  for (const batch of makeSubtitleBatches(nextCues)) {
+    const translatedTexts = await translateSubtitleBatch(batch, settings || {});
+    batch.forEach((cue, index) => {
+      cue.translatedText = translatedTexts[index] || cue.originalText;
+    });
+  }
+
+  cache[cacheKey] = {
+    cues: nextCues,
+    sourceLang: settings.sourceLang || 'auto',
+    targetLang: settings.targetLang || 'en',
+    model: settings.importedSubtitleModel || 'backend-openai',
+    updatedAt: Date.now(),
+  };
+  await writeImportedSubtitleCache(cache);
+  return { cues: nextCues, cacheHit: false, cacheKey };
+}
+
+async function startImportedSubtitles(tabId, cues, settings) {
+  if (!tabId) throw new Error('No active tab found.');
+  if (isCapturing) {
+    await stopCapture();
+  }
+  await ensureContentScript(tabId);
+  const response = await chrome.tabs.sendMessage(tabId, {
+    type: 'importedSubtitles:start',
+    cues,
+    settings,
+  });
+  if (response && response.ok === false) throw new Error(response.error || 'Could not start imported subtitles.');
+  activeTabId = tabId;
+  activeSettings = settings || activeSettings;
+  await chrome.storage.local.set({ importedSubtitlesActive: true, importedSubtitlesTabId: tabId });
+  return response || { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || (msg.target && msg.target !== 'background')) return false;
 
@@ -743,6 +888,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const settings = msg.settings || {};
           const result = await applySettings(settings, !!msg.restartRequired);
           sendResponse({ ok: true, ...result });
+          break;
+        }
+        case 'importedSubtitles:translate': {
+          const result = await translateImportedSubtitleCues({
+            fileHash: msg.fileHash,
+            cues: msg.cues || [],
+            settings: msg.settings || await getActiveSettings(),
+            force: !!msg.force,
+          });
+          sendResponse({ ok: true, ...result });
+          break;
+        }
+        case 'importedSubtitles:start': {
+          const result = await startImportedSubtitles(msg.tabId, msg.cues || [], msg.settings || {});
+          sendResponse({ ok: true, ...result });
+          break;
+        }
+        case 'importedSubtitles:update': {
+          const tabId = msg.tabId || activeTabId;
+          if (!tabId) throw new Error('No active tab found.');
+          await chrome.tabs.sendMessage(tabId, {
+            type: 'importedSubtitles:update',
+            cues: msg.cues || [],
+            settings: msg.settings || {},
+          });
+          sendResponse({ ok: true });
+          break;
+        }
+        case 'importedSubtitles:stop': {
+          const tabId = msg.tabId || activeTabId;
+          if (tabId) {
+            try { await chrome.tabs.sendMessage(tabId, { type: 'importedSubtitles:stop' }); } catch (e) {}
+          }
+          await chrome.storage.local.set({ importedSubtitlesActive: false, importedSubtitlesTabId: null });
+          sendResponse({ ok: true });
           break;
         }
         case 'ws:state': {

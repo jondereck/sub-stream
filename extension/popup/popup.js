@@ -52,6 +52,15 @@ const els = {
   testApiKey: $('testApiKey'),
   clearApiKey: $('clearApiKey'),
   apiKeyStatus: $('apiKeyStatus'),
+  liveModeButton: $('liveModeButton'),
+  importedModeButton: $('importedModeButton'),
+  importedSubtitleCard: $('importedSubtitleCard'),
+  subtitleFile: $('subtitleFile'),
+  subtitleFileMeta: $('subtitleFileMeta'),
+  startImportedSubtitles: $('startImportedSubtitles'),
+  stopImportedSubtitles: $('stopImportedSubtitles'),
+  retranslateSubtitles: $('retranslateSubtitles'),
+  importedSubtitleStatus: $('importedSubtitleStatus'),
   advancedToggle: $('advancedToggle'),
   advancedPanel: $('advancedPanel'),
   collapseAdvanced: $('collapseAdvanced'),
@@ -59,7 +68,8 @@ const els = {
 };
 
 const DEFAULTS = {
-  settingsVersion: 17,
+  settingsVersion: 18,
+  captionMode: 'live',
   sourceLang: 'auto',
   targetLang: 'en',
   translationMode: 'auto',
@@ -82,6 +92,7 @@ const DEFAULTS = {
   task: 'translate',
   model: 'base',
   device: 'cpu',
+  importedSubtitleModel: 'backend-openai',
 };
 
 const SUBTITLE_MODE_PROFILES = {
@@ -109,6 +120,7 @@ const SUBTITLE_MODE_PROFILES = {
 };
 
 const LIVE_SETTINGS = new Set([
+  'captionMode',
   'sourceLang',
   'targetLang',
   'translationMode',
@@ -166,6 +178,13 @@ let apiKeyInfo = { configured: false, source: null, checked: false };
 let loadedSettingsVersion = 0;
 let toastTimer = null;
 let saveDebounceTimer = null;
+let importedSubtitleState = {
+  fileName: '',
+  fileHash: '',
+  cues: [],
+  translatedCues: [],
+  isTranslating: false,
+};
 
 const FLAG_ASSETS = {
   ar: 'assets/flags/sa.svg',
@@ -205,6 +224,7 @@ const PLAY_ICON = '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true">
 const STOP_ICON = '<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect></svg>';
 const displayModeButtons = Array.from(document.querySelectorAll('[data-display-mode]'));
 const positionButtons = Array.from(document.querySelectorAll('[data-position]'));
+const captionModeButtons = Array.from(document.querySelectorAll('[data-caption-mode]'));
 
 const SELECT_LABELS = {
   sourceLang: {
@@ -463,6 +483,19 @@ function syncPositionButtons() {
   });
 }
 
+function syncCaptionModeButtons() {
+  const mode = currentSettings && currentSettings.captionMode === 'imported' ? 'imported' : 'live';
+  captionModeButtons.forEach((button) => {
+    const active = button.dataset.captionMode === mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  if (els.importedSubtitleCard) els.importedSubtitleCard.hidden = mode !== 'imported';
+  if (els.toggle) {
+    els.toggle.style.display = mode === 'imported' ? 'none' : '';
+  }
+}
+
 function computeFor(device) { return device === 'cuda' ? 'int8_float32' : 'int8'; }
 
 function translatorForTranscriber(transcriber) {
@@ -656,6 +689,8 @@ async function loadSettings() {
   if ((saved.settingsVersion || 0) < DEFAULTS.settingsVersion) {
     Object.assign(s, subtitleModeProfile(s.realtimeLatency));
   }
+  s.captionMode = s.captionMode === 'imported' ? 'imported' : 'live';
+  s.importedSubtitleModel = s.importedSubtitleModel || DEFAULTS.importedSubtitleModel;
   s.chunkDurationMs = clampMs(s.chunkDurationMs, 250, 5000, DEFAULTS.chunkDurationMs);
   s.maxBufferMs = clampMs(s.maxBufferMs, 250, 10000, DEFAULTS.maxBufferMs);
   s.vadSilenceMs = clampMs(s.vadSilenceMs, 150, 2000, DEFAULTS.vadSilenceMs);
@@ -691,6 +726,7 @@ async function loadSettings() {
   els.device.value = s.device;
   updateLanguageBadges();
   currentSettings = s;
+  syncCaptionModeButtons();
   return s;
 }
 
@@ -700,6 +736,7 @@ function readSettingsFromForm() {
   const modeProfile = subtitleModeProfile(realtimeLatency);
   return {
     settingsVersion: DEFAULTS.settingsVersion,
+    captionMode: currentSettings && currentSettings.captionMode === 'imported' ? 'imported' : 'live',
     sourceLang: els.sourceLang.value,
     targetLang: els.targetLang.value,
     translationMode: normalizeTranslationMode(els.translationMode.value),
@@ -724,6 +761,7 @@ function readSettingsFromForm() {
     model: els.model.value,
     device,
     compute: computeFor(device),
+    importedSubtitleModel: DEFAULTS.importedSubtitleModel,
   };
 }
 
@@ -1068,6 +1106,124 @@ async function clearApiKey() {
   }
 }
 
+function setImportedStatus(message, kind = 'idle') {
+  if (!els.importedSubtitleStatus) return;
+  els.importedSubtitleStatus.textContent = message;
+  els.importedSubtitleStatus.className = `imported-status ${kind}`;
+}
+
+function setImportedControls() {
+  const hasCues = importedSubtitleState.cues.length > 0;
+  const busy = importedSubtitleState.isTranslating;
+  if (els.startImportedSubtitles) els.startImportedSubtitles.disabled = !hasCues || busy;
+  if (els.retranslateSubtitles) els.retranslateSubtitles.disabled = !hasCues || busy;
+  if (els.stopImportedSubtitles) els.stopImportedSubtitles.disabled = false;
+}
+
+async function activeTabId() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tabs.length || !tabs[0].id) throw new Error('No active tab found.');
+  return tabs[0].id;
+}
+
+async function readSubtitleFile(file) {
+  if (!file) return;
+  const name = file.name || '';
+  if (!/\.(srt|vtt)$/i.test(name)) {
+    throw new Error('Only .srt and .vtt subtitle files are supported.');
+  }
+  const text = await file.text();
+  const cues = SubStreamSubtitles.parseSubtitleFile(name, text);
+  if (!cues.length) throw new Error('No valid subtitle cues found in this file.');
+  const fileHash = await SubStreamSubtitles.hashFileContent(text);
+  importedSubtitleState = {
+    fileName: name,
+    fileHash,
+    cues,
+    translatedCues: cues,
+    isTranslating: false,
+  };
+  els.subtitleFileMeta.textContent = `${name} - ${cues.length} cues loaded`;
+  setImportedStatus('Ready to sync. Original subtitles will show while translation loads.');
+  setImportedControls();
+}
+
+async function translateImportedSubtitles(force = false) {
+  if (!importedSubtitleState.cues.length) throw new Error('Import a subtitle file first.');
+  const settings = await saveSettings();
+  importedSubtitleState.isTranslating = true;
+  setImportedControls();
+  setImportedStatus(force ? 'Re-translating subtitles...' : 'Translating subtitles...');
+  try {
+    const res = await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'importedSubtitles:translate',
+      fileHash: importedSubtitleState.fileHash,
+      fileName: importedSubtitleState.fileName,
+      cues: importedSubtitleState.cues,
+      settings,
+      force,
+    });
+    if (!res || !res.ok) throw new Error(errorMessage(res && res.error, 'Subtitle translation failed.'));
+    importedSubtitleState.translatedCues = res.cues || importedSubtitleState.cues;
+    setImportedStatus(res.cacheHit ? 'Loaded translated subtitles from cache.' : 'Translated subtitles are ready.');
+    return importedSubtitleState.translatedCues;
+  } finally {
+    importedSubtitleState.isTranslating = false;
+    setImportedControls();
+  }
+}
+
+async function startImportedSubtitles(forceTranslate = false) {
+  if (!importedSubtitleState.cues.length) {
+    setImportedStatus('Import a subtitle file first.', 'error');
+    return;
+  }
+  const settings = await saveSettings();
+  const tabId = await activeTabId();
+  setImportedControls();
+  setImportedStatus('Mounting subtitle overlay...');
+  const startRes = await chrome.runtime.sendMessage({
+    target: 'background',
+    type: 'importedSubtitles:start',
+    tabId,
+    cues: importedSubtitleState.translatedCues.length ? importedSubtitleState.translatedCues : importedSubtitleState.cues,
+    settings,
+  });
+  if (!startRes || !startRes.ok) {
+    const message = errorMessage(startRes && startRes.error, 'Could not start imported subtitles.');
+    setImportedStatus(message, 'error');
+    showToast(message, 'error');
+    return;
+  }
+
+  setImportedStatus('Imported subtitles are syncing to video time.');
+  try {
+    const cues = await translateImportedSubtitles(forceTranslate);
+    await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'importedSubtitles:update',
+      tabId,
+      cues,
+      settings: readSettingsFromForm(),
+    });
+  } catch (e) {
+    const message = errorMessage(e, 'Translation failed. Showing original subtitles.');
+    setImportedStatus(message, 'error');
+    showToast(message, 'error');
+  }
+}
+
+async function stopImportedSubtitles() {
+  try {
+    const tabId = await activeTabId();
+    await chrome.runtime.sendMessage({ target: 'background', type: 'importedSubtitles:stop', tabId });
+    setImportedStatus(importedSubtitleState.cues.length ? 'Imported subtitle sync stopped.' : 'No subtitle file loaded.');
+  } catch (e) {
+    showToast(errorMessage(e, 'Failed to stop imported subtitles.'), 'error');
+  }
+}
+
 // Poll while popup is open so status reflects WS state changes in real time.
 setInterval(refresh, 1000);
 
@@ -1161,6 +1317,17 @@ positionButtons.forEach((button) => {
     els.position.dispatchEvent(new Event('change', { bubbles: true }));
   });
 });
+captionModeButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const mode = button.dataset.captionMode === 'imported' ? 'imported' : 'live';
+    currentSettings = { ...(currentSettings || DEFAULTS), captionMode: mode };
+    syncCaptionModeButtons();
+    saveAndBroadcastSettings({ restartRequired: false, force: true }).catch(() => {});
+    if (mode === 'imported') {
+      setImportedStatus(importedSubtitleState.cues.length ? 'Ready to sync imported subtitles.' : 'Import a subtitle file to begin.');
+    }
+  });
+});
 els.realtimeLatency.addEventListener('change', () => {
   els.realtimeLatency.value = normalizeSubtitleMode(els.realtimeLatency.value);
   applySubtitleModeProfileToForm(els.realtimeLatency.value);
@@ -1177,6 +1344,11 @@ els.partialEmitEnabled.addEventListener('change', () => {
 ['sourceLang', 'targetLang', 'translationMode'].forEach((key) => {
   els[key].addEventListener('change', () => {
     updateLanguageBadges();
+    if (importedSubtitleState.cues.length) {
+      importedSubtitleState.translatedCues = importedSubtitleState.cues;
+      setImportedStatus('Language changed. Re-translate imported subtitles to update the cache.');
+      setImportedControls();
+    }
     saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
   });
 });
@@ -1215,6 +1387,31 @@ els.resetUsage.addEventListener('click', async () => {
 els.saveApiKey.addEventListener('click', saveApiKey);
 els.testApiKey.addEventListener('click', testApiKey);
 els.clearApiKey.addEventListener('click', clearApiKey);
+els.subtitleFile.addEventListener('change', async () => {
+  try {
+    await readSubtitleFile(els.subtitleFile.files && els.subtitleFile.files[0]);
+  } catch (e) {
+    importedSubtitleState = { fileName: '', fileHash: '', cues: [], translatedCues: [], isTranslating: false };
+    els.subtitleFileMeta.textContent = 'Upload an .srt or .vtt file.';
+    setImportedStatus(errorMessage(e, 'Failed to read subtitle file.'), 'error');
+    setImportedControls();
+  }
+});
+els.startImportedSubtitles.addEventListener('click', () => {
+  startImportedSubtitles(false).catch((e) => {
+    const message = errorMessage(e, 'Failed to start imported subtitles.');
+    setImportedStatus(message, 'error');
+    showToast(message, 'error');
+  });
+});
+els.retranslateSubtitles.addEventListener('click', () => {
+  startImportedSubtitles(true).catch((e) => {
+    const message = errorMessage(e, 'Failed to re-translate subtitles.');
+    setImportedStatus(message, 'error');
+    showToast(message, 'error');
+  });
+});
+els.stopImportedSubtitles.addEventListener('click', stopImportedSubtitles);
 
 enhanceSelects();
 

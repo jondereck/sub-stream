@@ -40,6 +40,7 @@ let relativeTimelineBaseMs = null;
 let nativeSubtitleTrack = null;
 let nativeSubtitleCue = null;
 let nativeSubtitleText = '';
+let importedSubtitleSession = null;
 
 function pickPrimaryVideo() {
   const videos = Array.from(document.querySelectorAll('video'));
@@ -339,6 +340,7 @@ function nativeCueLinePercent() {
 }
 
 function mount(settings, sync) {
+  importedSubtitleSession = null;
   if (sync) currentSyncMetrics = sync;
   trackVideo();
   if (!trackedVideo) return;
@@ -346,12 +348,52 @@ function mount(settings, sync) {
   startRenderLoop();
 }
 
+function mountImportedSubtitles(cues, settings) {
+  trackVideo();
+  if (!trackedVideo) {
+    return { ok: false, error: 'No HTML5 video element found on this page.' };
+  }
+  ensureOverlay(settings || {});
+  importedSubtitleSession = {
+    cues: Array.isArray(cues) ? cues : [],
+    activeCueId: null,
+  };
+  clearPendingSubtitle();
+  startRenderLoop();
+  updateImportedSubtitleOverlay();
+  return { ok: true };
+}
+
+function updateImportedSubtitleSession(cues, settings) {
+  applySettings(settings || {});
+  if (!importedSubtitleSession) {
+    return mountImportedSubtitles(cues, settings);
+  }
+  importedSubtitleSession.cues = Array.isArray(cues) ? cues : [];
+  importedSubtitleSession.activeCueId = null;
+  updateImportedSubtitleOverlay();
+  return { ok: true };
+}
+
 function unmount() {
   stopRenderLoop();
+  importedSubtitleSession = null;
   activeSubtitle = null;
   subtitleQueue = [];
   relativeTimelineBaseMs = null;
   if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+  untrackVideo();
+  document.querySelectorAll('#' + OVERLAY_ID).forEach(n => n.remove());
+  document.documentElement.classList.remove('kami-subs-active');
+  overlayEl = null;
+  textEl = null;
+}
+
+function stopImportedSubtitles() {
+  importedSubtitleSession = null;
+  clearPendingSubtitle();
+  hideSubtitleText();
+  stopRenderLoop();
   untrackVideo();
   document.querySelectorAll('#' + OVERLAY_ID).forEach(n => n.remove());
   document.documentElement.classList.remove('kami-subs-active');
@@ -674,8 +716,48 @@ function stopRenderLoop() {
 }
 
 function renderLoop() {
-  updateSubtitles();
+  if (importedSubtitleSession) updateImportedSubtitleOverlay();
+  else updateSubtitles();
   renderLoopId = requestAnimationFrame(renderLoop);
+}
+
+function updateImportedSubtitleOverlay() {
+  if (!importedSubtitleSession || !overlayEl || !textEl) return;
+  if (!trackedVideo || !trackedVideo.isConnected) {
+    trackVideo();
+    if (!trackedVideo) {
+      showError('No HTML5 video element found on this page.');
+      return;
+    }
+  }
+
+  const currentTimeMs = (Number(trackedVideo.currentTime) || 0) * 1000;
+  const offsetMs = Number(currentSettings.subtitleDelayMs) || 0;
+  const cue = SubStreamSubtitles.getActiveCue(importedSubtitleSession.cues, currentTimeMs, offsetMs);
+  if (!cue) {
+    importedSubtitleSession.activeCueId = null;
+    if (overlayEl.classList.contains('kami-visible')) hideSubtitleText();
+    return;
+  }
+
+  const text = normalizeSubtitleText(cue.translatedText || cue.originalText || '');
+  if (!text) {
+    hideSubtitleText();
+    return;
+  }
+
+  if (importedSubtitleSession.activeCueId !== cue.id || textEl.textContent !== text) {
+    importedSubtitleSession.activeCueId = cue.id;
+    textEl.textContent = text.length > MAX_VISIBLE_CHARS ? '...' + text.slice(-MAX_VISIBLE_CHARS) : text;
+    const dir = subtitleDirection(text);
+    textEl.setAttribute('dir', dir);
+    overlayEl.setAttribute('dir', dir);
+  }
+  showNativeSubtitle(text);
+  if (!overlayEl.classList.contains('kami-visible')) {
+    overlayEl.classList.add('kami-visible');
+    positionOverlayOverVideo();
+  }
 }
 
 function updateSubtitles() {
@@ -828,6 +910,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'overlay:mount':   mount(msg.settings, msg.sync); break;
     case 'overlay:update':  applySettings(msg.settings || {}, msg.sync); positionOverlayOverVideo(); break;
     case 'overlay:unmount': unmount(); break;
+    case 'importedSubtitles:start':
+      sendResponse(mountImportedSubtitles(msg.cues || [], msg.settings || {}));
+      return true;
+    case 'importedSubtitles:update':
+      sendResponse(updateImportedSubtitleSession(msg.cues || [], msg.settings || {}));
+      return true;
+    case 'importedSubtitles:stop':
+      stopImportedSubtitles();
+      sendResponse({ ok: true });
+      return true;
     case 'overlay:text':
       setTranscriptText(msg);
       break;
