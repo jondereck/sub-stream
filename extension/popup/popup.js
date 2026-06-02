@@ -95,6 +95,8 @@ const DEFAULTS = {
   importedSubtitleModel: 'backend-openai',
 };
 
+const IMPORTED_SUBTITLE_START_TIMEOUT_MS = 6000;
+
 const SUBTITLE_MODE_PROFILES = {
   fast: {
     chunkDurationMs: 300,
@@ -1106,6 +1108,22 @@ async function clearApiKey() {
   }
 }
 
+function sendRuntimeMessageWithTimeout(message, timeoutMs, fallbackMessage) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(fallbackMessage)), timeoutMs);
+    chrome.runtime.sendMessage(message).then(
+      (response) => {
+        clearTimeout(timer);
+        resolve(response);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
 function setImportedStatus(message, kind = 'idle') {
   if (!els.importedSubtitleStatus) return;
   els.importedSubtitleStatus.textContent = message;
@@ -1183,13 +1201,17 @@ async function startImportedSubtitles(forceTranslate = false) {
   const tabId = await activeTabId();
   setImportedControls();
   setImportedStatus('Mounting subtitle overlay...');
-  const startRes = await chrome.runtime.sendMessage({
-    target: 'background',
-    type: 'importedSubtitles:start',
-    tabId,
-    cues: importedSubtitleState.translatedCues.length ? importedSubtitleState.translatedCues : importedSubtitleState.cues,
-    settings,
-  });
+  const startRes = await sendRuntimeMessageWithTimeout(
+    {
+      target: 'background',
+      type: 'importedSubtitles:start',
+      tabId,
+      cues: importedSubtitleState.translatedCues.length ? importedSubtitleState.translatedCues : importedSubtitleState.cues,
+      settings,
+    },
+    IMPORTED_SUBTITLE_START_TIMEOUT_MS,
+    'Subtitle overlay mount timed out. Reload the page and try again.'
+  );
   if (!startRes || !startRes.ok) {
     const message = errorMessage(startRes && startRes.error, 'Could not start imported subtitles.');
     setImportedStatus(message, 'error');

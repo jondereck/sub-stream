@@ -24,6 +24,8 @@ const MAX_SUBTITLE_OFFSET_MS = 10000;
 const IMPORTED_SUBTITLE_CACHE_KEY = 'substream.importedSubtitleCache.v1';
 const IMPORTED_SUBTITLE_BATCH_SIZE = 12;
 const IMPORTED_SUBTITLE_BATCH_CHAR_LIMIT = 1800;
+const IMPORTED_SUBTITLE_FRAME_DISCOVERY_TIMEOUT_MS = 2500;
+const IMPORTED_SUBTITLE_MESSAGE_TIMEOUT_MS = 2000;
 
 let activeTabId = null;
 let isCapturing = false;
@@ -36,6 +38,7 @@ let syncMetrics = emptySyncMetrics();
 let activeSettings = null;
 let activeCalibrationKey = null;
 let activeCalibrationProfile = null;
+let importedSubtitleFrameId = null;
 const previousWindowStates = new Map();
 
 function setAppState(nextState) {
@@ -57,6 +60,22 @@ function errorMessage(err, fallback = 'Something went wrong.') {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 function emptySyncMetrics() {
@@ -407,6 +426,81 @@ async function ensureContentScript(tabId) {
     target: { tabId, allFrames: true },
     files: ['subtitle-utils.js', 'content.js']
   });
+}
+
+async function findImportedSubtitleFrameId(tabId) {
+  try {
+    const results = await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => {
+          const videos = Array.from(document.querySelectorAll('video'));
+          if (!videos.length) return { hasVideo: false, score: 0 };
+          let bestScore = 0;
+          for (const video of videos) {
+            const rect = typeof video.getBoundingClientRect === 'function'
+              ? video.getBoundingClientRect()
+              : { width: 0, height: 0 };
+            const style = typeof getComputedStyle === 'function' ? getComputedStyle(video) : null;
+            const visible = !!(
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              Number(style.opacity || 1) !== 0
+            );
+            if (!visible) continue;
+            const score = rect.width * rect.height;
+            if (score > bestScore) bestScore = score;
+          }
+          return { hasVideo: bestScore > 0, score: bestScore };
+        },
+      }),
+      IMPORTED_SUBTITLE_FRAME_DISCOVERY_TIMEOUT_MS,
+      'Timed out while locating the video frame.'
+    );
+    let bestFrameId = null;
+    let bestScore = -1;
+    for (const entry of results || []) {
+      const result = entry && entry.result;
+      if (!result || !result.hasVideo) continue;
+      const score = Number(result.score) || 0;
+      if (score > bestScore) {
+        bestScore = score;
+        bestFrameId = entry.frameId;
+      }
+    }
+    return Number.isInteger(bestFrameId) ? bestFrameId : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function sendImportedSubtitleMessage(tabId, message, frameId = null) {
+  if (Number.isInteger(frameId)) {
+    try {
+      return await withTimeout(
+        chrome.tabs.sendMessage(tabId, message, { frameId }),
+        IMPORTED_SUBTITLE_MESSAGE_TIMEOUT_MS,
+        'Timed out while contacting the video frame.'
+      );
+    } catch (error) {
+      if (frameId !== 0) {
+        return withTimeout(
+          chrome.tabs.sendMessage(tabId, message),
+          IMPORTED_SUBTITLE_MESSAGE_TIMEOUT_MS,
+          'Timed out while mounting imported subtitles.'
+        );
+      }
+      throw error;
+    }
+  }
+  return withTimeout(
+    chrome.tabs.sendMessage(tabId, message),
+    IMPORTED_SUBTITLE_MESSAGE_TIMEOUT_MS,
+    'Timed out while mounting imported subtitles.'
+  );
 }
 
 // ---- Native Messaging: spawn the Python backend on demand ------------------
@@ -823,15 +917,21 @@ async function startImportedSubtitles(tabId, cues, settings) {
     await stopCapture();
   }
   await ensureContentScript(tabId);
-  const response = await chrome.tabs.sendMessage(tabId, {
+  const frameId = await findImportedSubtitleFrameId(tabId);
+  const response = await sendImportedSubtitleMessage(tabId, {
     type: 'importedSubtitles:start',
     cues,
     settings,
-  });
+  }, frameId);
   if (response && response.ok === false) throw new Error(response.error || 'Could not start imported subtitles.');
   activeTabId = tabId;
   activeSettings = settings || activeSettings;
-  await chrome.storage.local.set({ importedSubtitlesActive: true, importedSubtitlesTabId: tabId });
+  importedSubtitleFrameId = frameId;
+  await chrome.storage.local.set({
+    importedSubtitlesActive: true,
+    importedSubtitlesTabId: tabId,
+    importedSubtitlesFrameId: frameId,
+  });
   return response || { ok: true };
 }
 
@@ -908,20 +1008,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'importedSubtitles:update': {
           const tabId = msg.tabId || activeTabId;
           if (!tabId) throw new Error('No active tab found.');
-          await chrome.tabs.sendMessage(tabId, {
+          await sendImportedSubtitleMessage(tabId, {
             type: 'importedSubtitles:update',
             cues: msg.cues || [],
             settings: msg.settings || {},
-          });
+          }, Number.isInteger(msg.frameId) ? msg.frameId : importedSubtitleFrameId);
           sendResponse({ ok: true });
           break;
         }
         case 'importedSubtitles:stop': {
           const tabId = msg.tabId || activeTabId;
           if (tabId) {
-            try { await chrome.tabs.sendMessage(tabId, { type: 'importedSubtitles:stop' }); } catch (e) {}
+            try {
+              await sendImportedSubtitleMessage(
+                tabId,
+                { type: 'importedSubtitles:stop' },
+                Number.isInteger(msg.frameId) ? msg.frameId : importedSubtitleFrameId
+              );
+            } catch (e) {}
           }
-          await chrome.storage.local.set({ importedSubtitlesActive: false, importedSubtitlesTabId: null });
+          importedSubtitleFrameId = null;
+          await chrome.storage.local.set({
+            importedSubtitlesActive: false,
+            importedSubtitlesTabId: null,
+            importedSubtitlesFrameId: null,
+          });
           sendResponse({ ok: true });
           break;
         }
@@ -1013,5 +1124,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  if (tabId === activeTabId) await stopCapture();
+  if (tabId === activeTabId) {
+    importedSubtitleFrameId = null;
+    await stopCapture();
+  }
 });

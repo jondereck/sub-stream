@@ -100,12 +100,42 @@ test('background translates multi-line subtitle batches', async () => {
   assert.strictEqual(result.cues[1].translatedText, 'good night');
 });
 
+test('background picks the frame with the largest visible video for imported subtitles', async () => {
+  const storage = {};
+  const sandbox = loadBackgroundSandbox(storage);
+  sandbox.chrome.scripting.executeScript = async () => ([
+    { frameId: 0, result: { hasVideo: false, score: 0 } },
+    { frameId: 2, result: { hasVideo: true, score: 64000 } },
+    { frameId: 5, result: { hasVideo: true, score: 230400 } },
+  ]);
+  const frameId = await sandbox.findImportedSubtitleFrameId(123);
+  assert.strictEqual(frameId, 5);
+});
+
+test('background falls back to a tab-level message when frame-targeted imported subtitle send fails', async () => {
+  const storage = {};
+  const sandbox = loadBackgroundSandbox(storage);
+  const calls = [];
+  sandbox.chrome.tabs.sendMessage = async (tabId, message, options) => {
+    calls.push({ tabId, message, options });
+    if (options && options.frameId === 7) throw new Error('frame unavailable');
+    return { ok: true };
+  };
+  const result = await sandbox.sendImportedSubtitleMessage(55, { type: 'importedSubtitles:start' }, 7);
+  assert.deepStrictEqual(result, { ok: true });
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(calls[0].options.frameId, 7);
+  assert.strictEqual(calls[1].options, undefined);
+});
+
 function loadBackgroundSandbox(storage) {
   const backgroundPath = path.resolve(__dirname, '../extension/background.js');
   const source = fs.readFileSync(backgroundPath, 'utf8');
   const sandbox = {
     console,
     URL,
+    setTimeout,
+    clearTimeout,
     fetch: async () => { throw new Error('fetch should not be called'); },
     importScripts: () => {},
     SubStreamSubtitles: subtitles,
@@ -128,6 +158,9 @@ function loadBackgroundSandbox(storage) {
     },
   };
   vm.createContext(sandbox);
-  vm.runInContext(`${source}\nthis.translateImportedSubtitleCues = translateImportedSubtitleCues;`, sandbox);
+  vm.runInContext(`${source}
+this.translateImportedSubtitleCues = translateImportedSubtitleCues;
+this.findImportedSubtitleFrameId = findImportedSubtitleFrameId;
+this.sendImportedSubtitleMessage = sendImportedSubtitleMessage;`, sandbox);
   return sandbox;
 }
