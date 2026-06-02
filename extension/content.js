@@ -7,8 +7,8 @@ const TARGET_SUBTITLE_CARD_CHARS = 92;
 const MIN_SUBTITLE_CARD_CHARS = 36;
 const READABILITY_BASE_MS = 900;
 const READABILITY_MS_PER_CHAR = 45;
-const MIN_SUBTITLE_DELAY_MS = -10000;
-const MAX_SUBTITLE_DELAY_MS = 10000;
+const MIN_SUBTITLE_DELAY_MS = -300000;
+const MAX_SUBTITLE_DELAY_MS = 300000;
 const DEFAULT_SUBTITLE_DURATION_MS = 2600;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
@@ -152,10 +152,7 @@ function shouldUseNativeVideoSubtitle() {
 }
 
 function effectiveSubtitlePosition() {
-  // Fullscreen video controls and site overlays often cover the bottom edge.
-  // Keep fullscreen captions at the top even when the normal page setting is
-  // bottom.
-  return fullscreenElement() ? 'top' : (currentSettings.position || 'bottom');
+  return currentSettings.position || 'bottom';
 }
 
 function ensureOverlay(settings) {
@@ -732,7 +729,7 @@ function updateImportedSubtitleOverlay() {
   }
 
   const currentTimeMs = (Number(trackedVideo.currentTime) || 0) * 1000;
-  const offsetMs = Number(currentSettings.subtitleDelayMs) || 0;
+  const offsetMs = subtitleOffsetMs();
   const cue = SubStreamSubtitles.getActiveCue(importedSubtitleSession.cues, currentTimeMs, offsetMs);
   if (!cue) {
     importedSubtitleSession.activeCueId = null;

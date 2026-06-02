@@ -783,6 +783,10 @@ button.stop .spinner {
   gap: 8px;
 }
 
+.imported-actions--compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .imported-actions button {
   min-height: 38px;
   border: 1px solid var(--stroke-strong);
@@ -807,6 +811,25 @@ button.stop .spinner {
   color: #d5dfda;
   font-size: 11px;
   line-height: 1.35;
+}
+
+.imported-timing {
+  display: grid;
+  gap: 8px;
+}
+
+.imported-timing__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #d5dfda;
+  font-size: 11px;
+}
+
+.imported-timing__header strong {
+  color: var(--accent);
+  font-size: 12px;
 }
 
 .custom-select {
@@ -1036,6 +1059,20 @@ button.stop .spinner {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.delay-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.delay-input-unit {
+  color: #aab8b2;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .inline-reset {

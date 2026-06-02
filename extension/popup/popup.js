@@ -24,6 +24,7 @@ const els = {
   position: $('position'),
   subtitleDelay: $('subtitleDelay'),
   subtitleDelayVal: $('subtitleDelayVal'),
+  subtitleDelayManual: $('subtitleDelayManual'),
   subtitleDuration: $('subtitleDuration'),
   subtitleDurationVal: $('subtitleDurationVal'),
   showSourceFirst: $('showSourceFirst'),
@@ -59,6 +60,9 @@ const els = {
   subtitleFileMeta: $('subtitleFileMeta'),
   subtitleSearchQuery: $('subtitleSearchQuery'),
   subtitleSearchButton: $('subtitleSearchButton'),
+  importedTimingOffset: $('importedTimingOffset'),
+  importedNudgeEarlier: $('importedNudgeEarlier'),
+  importedNudgeLater: $('importedNudgeLater'),
   startImportedSubtitles: $('startImportedSubtitles'),
   stopImportedSubtitles: $('stopImportedSubtitles'),
   retranslateSubtitles: $('retranslateSubtitles'),
@@ -169,8 +173,8 @@ const SETTING_FIELDS = [
   'model',
   'device',
 ];
-const MIN_SUBTITLE_OFFSET_MS = -10000;
-const MAX_SUBTITLE_OFFSET_MS = 10000;
+const MIN_SUBTITLE_OFFSET_MS = -300000;
+const MAX_SUBTITLE_OFFSET_MS = 300000;
 const MIN_SUBTITLE_DURATION_MS = 1200;
 const MAX_SUBTITLE_DURATION_MS = 8000;
 const TRANSLATION_DISPLAY_MODES = new Set(['translation_replace', 'translation_dual']);
@@ -184,6 +188,8 @@ let apiKeyInfo = { configured: false, source: null, checked: false };
 let loadedSettingsVersion = 0;
 let toastTimer = null;
 let saveDebounceTimer = null;
+let importedNudgeHoldTimeout = null;
+let importedNudgeHoldInterval = null;
 let importedSubtitleState = {
   fileName: '',
   fileHash: '',
@@ -576,6 +582,19 @@ function formatSubtitleDelay(ms) {
   return `${seconds > 0 ? '+' : ''}${seconds.toFixed(1)}s`;
 }
 
+function formatSubtitleDelayInput(ms) {
+  return (clampSubtitleDelayMs(ms) / 1000).toFixed(1);
+}
+
+function syncSubtitleDelayInputs(ms) {
+  const clamped = clampSubtitleDelayMs(ms);
+  els.subtitleDelay.value = String(clamped);
+  els.subtitleDelayVal.textContent = formatSubtitleDelay(clamped);
+  if (els.subtitleDelayManual) {
+    els.subtitleDelayManual.value = formatSubtitleDelayInput(clamped);
+  }
+}
+
 function clampSubtitleDurationMs(ms) {
   const value = parseInt(ms, 10);
   if (!Number.isFinite(value)) return DEFAULTS.subtitleDurationMs;
@@ -642,6 +661,9 @@ function updateSyncMetrics(sync) {
     els.syncLiveOffset.textContent = formatSubtitleDelay((Number(metrics.liveAutoOffsetS) || 0) * 1000);
   }
   els.syncEffectiveOffset.textContent = formatSubtitleDelay((Number(metrics.effectiveOffsetS) || 0) * 1000);
+  if (els.importedTimingOffset) {
+    els.importedTimingOffset.textContent = formatSubtitleDelay((Number(metrics.effectiveOffsetS) || 0) * 1000);
+  }
 }
 
 function showToast(message, kind = 'ok') {
@@ -711,8 +733,7 @@ async function loadSettings() {
   els.fontSizeVal.textContent = s.fontSize;
   els.position.value = s.position;
   syncPositionButtons();
-  els.subtitleDelay.value = s.subtitleDelayMs;
-  els.subtitleDelayVal.textContent = formatSubtitleDelay(s.subtitleDelayMs);
+  syncSubtitleDelayInputs(s.subtitleDelayMs);
   els.subtitleDuration.value = s.subtitleDurationMs;
   els.subtitleDurationVal.textContent = formatSubtitleDuration(s.subtitleDurationMs);
   els.showSourceFirst.checked = s.showSourceFirst;
@@ -1269,6 +1290,66 @@ async function openSubtitleCatSearch() {
   }
 }
 
+async function nudgeImportedSubtitleOffset(deltaMs) {
+  const nextValue = clampSubtitleDelayMs((Number(els.subtitleDelay.value) || 0) + deltaMs);
+  syncSubtitleDelayInputs(nextValue);
+  if (els.importedTimingOffset) {
+    els.importedTimingOffset.textContent = formatSubtitleDelay(nextValue);
+  }
+  await saveAndBroadcastSettings({ restartRequired: false, force: true });
+  notifySubtitleDelayAdjusted(nextValue);
+}
+
+function notifySubtitleDelayAdjusted(ms) {
+  const formatted = formatSubtitleDelay(ms);
+  showToast(`Subtitle timing adjusted to ${formatted}`);
+  if (currentSettings && currentSettings.captionMode === 'imported') {
+    setImportedStatus(`Imported subtitle timing adjusted to ${formatted}.`, 'ok');
+  }
+}
+
+function stopImportedNudgeHold() {
+  if (importedNudgeHoldTimeout) {
+    clearTimeout(importedNudgeHoldTimeout);
+    importedNudgeHoldTimeout = null;
+  }
+  if (importedNudgeHoldInterval) {
+    clearInterval(importedNudgeHoldInterval);
+    importedNudgeHoldInterval = null;
+  }
+}
+
+function bindImportedNudgeButton(button, deltaMs) {
+  if (!button) return;
+  const runNudge = () => nudgeImportedSubtitleOffset(deltaMs).catch((e) => {
+    const message = errorMessage(e, 'Failed to adjust subtitle timing.');
+    setImportedStatus(message, 'error');
+    showToast(message, 'error');
+    stopImportedNudgeHold();
+  });
+
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button != null && event.button !== 0) return;
+    event.preventDefault();
+    stopImportedNudgeHold();
+    runNudge();
+    importedNudgeHoldTimeout = setTimeout(() => {
+      importedNudgeHoldInterval = setInterval(runNudge, 90);
+    }, 260);
+  });
+
+  ['pointerup', 'pointercancel', 'pointerleave', 'lostpointercapture'].forEach((eventName) => {
+    button.addEventListener(eventName, stopImportedNudgeHold);
+  });
+
+  button.addEventListener('keydown', (event) => {
+    if (event.repeat) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    runNudge();
+  });
+}
+
 async function translateImportedSubtitles(force = false) {
   if (!importedSubtitleState.cues.length) throw new Error('Import a subtitle file first.');
   const settings = await saveSettings();
@@ -1400,9 +1481,25 @@ els.fontSize.addEventListener('input', () => {
   debounceSettingsApply(false);
 });
 els.subtitleDelay.addEventListener('input', () => {
-  els.subtitleDelayVal.textContent = formatSubtitleDelay(els.subtitleDelay.value);
+  syncSubtitleDelayInputs(els.subtitleDelay.value);
   debounceSettingsApply(false);
 });
+if (els.subtitleDelayManual) {
+  els.subtitleDelayManual.addEventListener('input', () => {
+    const parsedMs = Number(els.subtitleDelayManual.value) * 1000;
+    if (!Number.isFinite(parsedMs)) return;
+    syncSubtitleDelayInputs(parsedMs);
+    debounceSettingsApply(false);
+  });
+  els.subtitleDelayManual.addEventListener('change', () => {
+    const parsedMs = Number(els.subtitleDelayManual.value) * 1000;
+    const nextValue = Number.isFinite(parsedMs) ? parsedMs : 0;
+    syncSubtitleDelayInputs(nextValue);
+    saveAndBroadcastSettings({ restartRequired: false, force: true })
+      .then(() => notifySubtitleDelayAdjusted(nextValue))
+      .catch(() => {});
+  });
+}
 els.subtitleDuration.addEventListener('input', () => {
   els.subtitleDurationVal.textContent = formatSubtitleDuration(els.subtitleDuration.value);
   debounceSettingsApply(false);
@@ -1430,9 +1527,10 @@ els.syncMode.addEventListener('change', () => {
   debounceSettingsApply(false);
 });
 els.resetSubtitleDelay.addEventListener('click', () => {
-  els.subtitleDelay.value = '0';
-  els.subtitleDelayVal.textContent = formatSubtitleDelay(0);
-  saveAndBroadcastSettings({ restartRequired: false, force: true }).catch(() => {});
+  syncSubtitleDelayInputs(0);
+  saveAndBroadcastSettings({ restartRequired: false, force: true })
+    .then(() => notifySubtitleDelayAdjusted(0))
+    .catch(() => {});
 });
 els.position.addEventListener('change', () => {
   syncPositionButtons();
@@ -1546,6 +1644,8 @@ if (els.subtitleSearchQuery) {
     });
   });
 }
+bindImportedNudgeButton(els.importedNudgeEarlier, -100);
+bindImportedNudgeButton(els.importedNudgeLater, 100);
 els.startImportedSubtitles.addEventListener('click', () => {
   startImportedSubtitles(false).catch((e) => {
     const message = errorMessage(e, 'Failed to start imported subtitles.');

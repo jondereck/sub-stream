@@ -141,6 +141,17 @@
               <input id="subtitleFile" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" />
               <span id="subtitleFileMeta" class="field-help">Upload an .srt or .vtt file.</span>
             </label>
+            <div class="imported-timing">
+              <div class="imported-timing__header">
+                <span>Quick timing nudges</span>
+                <strong id="importedTimingOffset">0.0s</strong>
+              </div>
+              <div class="imported-actions imported-actions--compact">
+                <button id="importedNudgeEarlier" type="button">Earlier -100ms</button>
+                <button id="importedNudgeLater" type="button">Later +100ms</button>
+              </div>
+              <span class="field-help">Uses the same effective offset as live subtitles. Fine-tune while the video is playing.</span>
+            </div>
             <div class="imported-actions">
               <button id="startImportedSubtitles" type="button" disabled>Start Imported Sync</button>
               <button id="stopImportedSubtitles" type="button" disabled>Stop</button>
@@ -237,8 +248,12 @@
                 <span>Manual offset <span id="subtitleDelayVal">0.0s</span></span>
                 <button id="resetSubtitleDelay" class="inline-reset" type="button">Reset to 0.0s</button>
               </span>
-              <input type="range" id="subtitleDelay" min="-10000" max="10000" step="100" value="0" />
-              <span class="field-help">Range -10.0s to +10.0s. Adjusts subtitle timing only.</span>
+              <div class="delay-input-row">
+                <input id="subtitleDelayManual" class="text-input" type="number" min="-300" max="300" step="0.1" value="0" />
+                <span class="delay-input-unit">seconds</span>
+              </div>
+              <input type="range" id="subtitleDelay" min="-300000" max="300000" step="100" value="0" />
+              <span class="field-help">Range -300.0s to +300.0s. You can type a large offset directly if the subtitle source is heavily shifted.</span>
             </label>
 
           </div>
