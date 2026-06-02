@@ -126,6 +126,17 @@
             <button id="retranslateSubtitles" class="text-btn" type="button" disabled>Re-translate</button>
           </div>
           <div class="settings">
+            <div class="subtitle-search-panel">
+              <label class="field-stack">
+                Find subtitle
+                <div class="search-row">
+                  <input id="subtitleSearchQuery" class="text-input" type="text" placeholder="Movie or episode name" />
+                  <button id="subtitleSearchButton" type="button">Find</button>
+                </div>
+                <span class="field-help">Search Subtitle Cat directly, then import the original `.srt` into this sync flow.</span>
+              </label>
+              <div id="subtitleSearchResults" class="subtitle-search-results" hidden></div>
+            </div>
             <label class="file-drop">
               Subtitle file
               <input id="subtitleFile" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" />

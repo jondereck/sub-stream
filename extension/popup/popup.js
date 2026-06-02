@@ -57,6 +57,9 @@ const els = {
   importedSubtitleCard: $('importedSubtitleCard'),
   subtitleFile: $('subtitleFile'),
   subtitleFileMeta: $('subtitleFileMeta'),
+  subtitleSearchQuery: $('subtitleSearchQuery'),
+  subtitleSearchButton: $('subtitleSearchButton'),
+  subtitleSearchResults: $('subtitleSearchResults'),
   startImportedSubtitles: $('startImportedSubtitles'),
   stopImportedSubtitles: $('stopImportedSubtitles'),
   retranslateSubtitles: $('retranslateSubtitles'),
@@ -96,6 +99,7 @@ const DEFAULTS = {
 };
 
 const IMPORTED_SUBTITLE_START_TIMEOUT_MS = 6000;
+const IMPORTED_SUBTITLE_POPUP_STATE_KEY = 'importedSubtitlePopupState';
 
 const SUBTITLE_MODE_PROFILES = {
   fast: {
@@ -185,7 +189,13 @@ let importedSubtitleState = {
   fileHash: '',
   cues: [],
   translatedCues: [],
+  cueCount: 0,
   isTranslating: false,
+};
+let subtitleSearchState = {
+  isSearching: false,
+  loadingDetailUrl: '',
+  results: [],
 };
 
 const FLAG_ASSETS = {
@@ -1124,6 +1134,63 @@ function sendRuntimeMessageWithTimeout(message, timeoutMs, fallbackMessage) {
   });
 }
 
+function importedCueCount() {
+  return importedSubtitleState.cues.length || Number(importedSubtitleState.cueCount) || 0;
+}
+
+async function persistImportedSubtitlePopupState(extra = {}) {
+  const currentTabId = await activeTabId().catch(() => null);
+  await chrome.storage.local.set({
+    [IMPORTED_SUBTITLE_POPUP_STATE_KEY]: {
+      fileName: importedSubtitleState.fileName || '',
+      fileHash: importedSubtitleState.fileHash || '',
+      cueCount: importedCueCount(),
+      status: els.importedSubtitleStatus ? els.importedSubtitleStatus.textContent : '',
+      statusKind: extra.statusKind || '',
+      tabId: currentTabId,
+      ...extra,
+    },
+  });
+}
+
+async function restoreImportedSubtitlePopupState() {
+  if (importedSubtitleState.cues.length) return;
+  const currentTabId = await activeTabId().catch(() => null);
+  const stored = await chrome.storage.local.get([
+    IMPORTED_SUBTITLE_POPUP_STATE_KEY,
+    'importedSubtitlesActive',
+    'importedSubtitlesTabId',
+  ]);
+  const session = stored[IMPORTED_SUBTITLE_POPUP_STATE_KEY];
+  if (!session || !session.fileName) return;
+
+  importedSubtitleState = {
+    ...importedSubtitleState,
+    fileName: String(session.fileName || ''),
+    fileHash: String(session.fileHash || ''),
+    cues: [],
+    translatedCues: [],
+    cueCount: Number(session.cueCount) || 0,
+    isTranslating: false,
+  };
+
+  const count = importedCueCount();
+  els.subtitleFileMeta.textContent = count > 0
+    ? `${importedSubtitleState.fileName} - ${count} cues loaded`
+    : importedSubtitleState.fileName;
+
+  const isSameTabActive = !!(
+    stored.importedSubtitlesActive &&
+    currentTabId != null &&
+    Number(stored.importedSubtitlesTabId) === Number(currentTabId)
+  );
+  const status = isSameTabActive
+    ? 'Imported subtitles are already loaded in this tab.'
+    : (session.status || 'Imported subtitle file was loaded previously.');
+  setImportedStatus(status, isSameTabActive ? 'ok' : (session.statusKind || 'idle'));
+  setImportedControls();
+}
+
 function setImportedStatus(message, kind = 'idle') {
   if (!els.importedSubtitleStatus) return;
   els.importedSubtitleStatus.textContent = message;
@@ -1159,11 +1226,117 @@ async function readSubtitleFile(file) {
     fileHash,
     cues,
     translatedCues: cues,
+    cueCount: cues.length,
     isTranslating: false,
   };
   els.subtitleFileMeta.textContent = `${name} - ${cues.length} cues loaded`;
   setImportedStatus('Ready to sync. Original subtitles will show while translation loads.');
   setImportedControls();
+  await persistImportedSubtitlePopupState({ statusKind: 'idle' });
+}
+
+async function importSubtitleText(fileName, text) {
+  const name = String(fileName || 'imported-subtitle.srt').trim() || 'imported-subtitle.srt';
+  if (!/\.(srt|vtt)$/i.test(name)) {
+    throw new Error('Only .srt and .vtt subtitle files are supported.');
+  }
+  const content = String(text || '');
+  const cues = SubStreamSubtitles.parseSubtitleFile(name, content);
+  if (!cues.length) throw new Error('No valid subtitle cues found in this subtitle source.');
+  const fileHash = await SubStreamSubtitles.hashFileContent(content);
+  importedSubtitleState = {
+    fileName: name,
+    fileHash,
+    cues,
+    translatedCues: cues,
+    cueCount: cues.length,
+    isTranslating: false,
+  };
+  els.subtitleFileMeta.textContent = `${name} - ${cues.length} cues loaded`;
+  setImportedStatus('Subtitle imported from Subtitle Cat. Ready to sync.', 'ok');
+  setImportedControls();
+  await persistImportedSubtitlePopupState({ statusKind: 'ok' });
+}
+
+function renderSubtitleSearchResults() {
+  if (!els.subtitleSearchResults) return;
+  const results = subtitleSearchState.results || [];
+  if (!results.length) {
+    els.subtitleSearchResults.hidden = false;
+    els.subtitleSearchResults.innerHTML = '<div class="subtitle-search-empty">No subtitle results found.</div>';
+    return;
+  }
+  els.subtitleSearchResults.hidden = false;
+  els.subtitleSearchResults.innerHTML = results.map((result) => {
+    const meta = [
+      result.sourceNote || '',
+      result.size || '',
+      result.downloads || '',
+      result.languages || '',
+    ].filter(Boolean).join(' • ');
+    const loading = subtitleSearchState.loadingDetailUrl === result.detailUrl;
+    return `
+      <div class="subtitle-search-item">
+        <strong>${result.title}</strong>
+        <div class="subtitle-search-meta">${meta || 'Subtitle Cat result'}</div>
+        <button type="button" data-subtitle-detail-url="${result.detailUrl}" ${loading ? 'disabled' : ''}>${loading ? 'Loading...' : 'Use this subtitle'}</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function searchSubtitleSource() {
+  const query = String(els.subtitleSearchQuery && els.subtitleSearchQuery.value || '').trim();
+  if (!query) {
+    setImportedStatus('Enter a movie or episode name first.', 'error');
+    return;
+  }
+  subtitleSearchState.isSearching = true;
+  subtitleSearchState.loadingDetailUrl = '';
+  subtitleSearchState.results = [];
+  if (els.subtitleSearchButton) els.subtitleSearchButton.disabled = true;
+  if (els.subtitleSearchResults) {
+    els.subtitleSearchResults.hidden = false;
+    els.subtitleSearchResults.innerHTML = '<div class="subtitle-search-empty">Searching Subtitle Cat...</div>';
+  }
+  try {
+    const res = await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'subtitleSearch:search',
+      provider: 'subtitlecat',
+      query,
+    });
+    if (!res || !res.ok) throw new Error(errorMessage(res && res.error, 'Subtitle search failed.'));
+    subtitleSearchState.results = Array.isArray(res.results) ? res.results : [];
+    renderSubtitleSearchResults();
+    setImportedStatus(
+      subtitleSearchState.results.length
+        ? `Found ${subtitleSearchState.results.length} subtitle result${subtitleSearchState.results.length === 1 ? '' : 's'}.`
+        : 'No subtitle results found.',
+      subtitleSearchState.results.length ? 'ok' : 'idle'
+    );
+  } finally {
+    subtitleSearchState.isSearching = false;
+    if (els.subtitleSearchButton) els.subtitleSearchButton.disabled = false;
+  }
+}
+
+async function loadSubtitleSearchResult(detailUrl) {
+  subtitleSearchState.loadingDetailUrl = detailUrl;
+  renderSubtitleSearchResults();
+  try {
+    const res = await chrome.runtime.sendMessage({
+      target: 'background',
+      type: 'subtitleSearch:load',
+      provider: 'subtitlecat',
+      detailUrl,
+    });
+    if (!res || !res.ok) throw new Error(errorMessage(res && res.error, 'Subtitle import failed.'));
+    await importSubtitleText(res.fileName, res.text);
+  } finally {
+    subtitleSearchState.loadingDetailUrl = '';
+    renderSubtitleSearchResults();
+  }
 }
 
 async function translateImportedSubtitles(force = false) {
@@ -1185,6 +1358,7 @@ async function translateImportedSubtitles(force = false) {
     if (!res || !res.ok) throw new Error(errorMessage(res && res.error, 'Subtitle translation failed.'));
     importedSubtitleState.translatedCues = res.cues || importedSubtitleState.cues;
     setImportedStatus(res.cacheHit ? 'Loaded translated subtitles from cache.' : 'Translated subtitles are ready.');
+    await persistImportedSubtitlePopupState({ statusKind: 'ok' });
     return importedSubtitleState.translatedCues;
   } finally {
     importedSubtitleState.isTranslating = false;
@@ -1220,6 +1394,7 @@ async function startImportedSubtitles(forceTranslate = false) {
   }
 
   setImportedStatus('Imported subtitles are syncing to video time.');
+  await persistImportedSubtitlePopupState({ statusKind: 'ok', tabId });
   try {
     const cues = await translateImportedSubtitles(forceTranslate);
     await chrome.runtime.sendMessage({
@@ -1240,7 +1415,8 @@ async function stopImportedSubtitles() {
   try {
     const tabId = await activeTabId();
     await chrome.runtime.sendMessage({ target: 'background', type: 'importedSubtitles:stop', tabId });
-    setImportedStatus(importedSubtitleState.cues.length ? 'Imported subtitle sync stopped.' : 'No subtitle file loaded.');
+    setImportedStatus(importedCueCount() ? 'Imported subtitle sync stopped.' : 'No subtitle file loaded.');
+    await persistImportedSubtitlePopupState({ statusKind: 'idle', tabId });
   } catch (e) {
     showToast(errorMessage(e, 'Failed to stop imported subtitles.'), 'error');
   }
@@ -1346,7 +1522,7 @@ captionModeButtons.forEach((button) => {
     syncCaptionModeButtons();
     saveAndBroadcastSettings({ restartRequired: false, force: true }).catch(() => {});
     if (mode === 'imported') {
-      setImportedStatus(importedSubtitleState.cues.length ? 'Ready to sync imported subtitles.' : 'Import a subtitle file to begin.');
+      setImportedStatus(importedCueCount() ? 'Ready to sync imported subtitles.' : 'Import a subtitle file to begin.');
     }
   });
 });
@@ -1413,12 +1589,44 @@ els.subtitleFile.addEventListener('change', async () => {
   try {
     await readSubtitleFile(els.subtitleFile.files && els.subtitleFile.files[0]);
   } catch (e) {
-    importedSubtitleState = { fileName: '', fileHash: '', cues: [], translatedCues: [], isTranslating: false };
+    importedSubtitleState = { fileName: '', fileHash: '', cues: [], translatedCues: [], cueCount: 0, isTranslating: false };
     els.subtitleFileMeta.textContent = 'Upload an .srt or .vtt file.';
     setImportedStatus(errorMessage(e, 'Failed to read subtitle file.'), 'error');
     setImportedControls();
+    await chrome.storage.local.remove(IMPORTED_SUBTITLE_POPUP_STATE_KEY);
   }
 });
+if (els.subtitleSearchButton) {
+  els.subtitleSearchButton.addEventListener('click', () => {
+    searchSubtitleSource().catch((e) => {
+      const message = errorMessage(e, 'Subtitle search failed.');
+      setImportedStatus(message, 'error');
+      showToast(message, 'error');
+    });
+  });
+}
+if (els.subtitleSearchQuery) {
+  els.subtitleSearchQuery.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    searchSubtitleSource().catch((e) => {
+      const message = errorMessage(e, 'Subtitle search failed.');
+      setImportedStatus(message, 'error');
+      showToast(message, 'error');
+    });
+  });
+}
+if (els.subtitleSearchResults) {
+  els.subtitleSearchResults.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-subtitle-detail-url]');
+    if (!button) return;
+    loadSubtitleSearchResult(button.dataset.subtitleDetailUrl).catch((e) => {
+      const message = errorMessage(e, 'Subtitle import failed.');
+      setImportedStatus(message, 'error');
+      showToast(message, 'error');
+    });
+  });
+}
 els.startImportedSubtitles.addEventListener('click', () => {
   startImportedSubtitles(false).catch((e) => {
     const message = errorMessage(e, 'Failed to start imported subtitles.');
@@ -1439,5 +1647,6 @@ enhanceSelects();
 
 loadSettings().then(async () => {
   await refresh();
+  await restoreImportedSubtitlePopupState();
   await refreshApiKeyStatus();
 });

@@ -128,6 +128,35 @@ test('background falls back to a tab-level message when frame-targeted imported 
   assert.strictEqual(calls[1].options, undefined);
 });
 
+test('background parses subtitlecat search results', async () => {
+  const sandbox = loadBackgroundSandbox({});
+  const html = `
+    <table><tbody>
+      <tr>
+        <td><a href="subs/1498/The.Boys.S05E08.1080p.WEB.H264-SYLiX.html">The.Boys.S05E08.1080p.WEB.H264-SYLiX</a> (translated from English)</td>
+        <td>&nbsp;</td>
+        <td class="sub-table__size-cell"><span class="sub-table__metric-value">57 KB</span></td>
+        <td>26 downloads</td>
+        <td>26 languages</td>
+      </tr>
+    </tbody></table>
+  `;
+  const results = sandbox.parseSubtitleCatSearchResults(html);
+  assert.strictEqual(results.length, 1);
+  assert.strictEqual(results[0].title, 'The.Boys.S05E08.1080p.WEB.H264-SYLiX');
+  assert.strictEqual(results[0].detailUrl, 'https://www.subtitlecat.com/subs/1498/The.Boys.S05E08.1080p.WEB.H264-SYLiX.html');
+  assert.strictEqual(results[0].size, '57 KB');
+});
+
+test('background extracts subtitlecat original subtitle url', async () => {
+  const sandbox = loadBackgroundSandbox({});
+  const html = `
+    <button onclick="translate_from_server_folder('af', 'The.Boys.S05E08.1080p.WEB.h264-ETHEL-orig.srt', '/subs/1504/')">Translate</button>
+  `;
+  const url = sandbox.parseSubtitleCatOriginalSubtitleUrl(html);
+  assert.strictEqual(url, 'https://www.subtitlecat.com/subs/1504/The.Boys.S05E08.1080p.WEB.h264-ETHEL-orig.srt');
+});
+
 function loadBackgroundSandbox(storage) {
   const backgroundPath = path.resolve(__dirname, '../extension/background.js');
   const source = fs.readFileSync(backgroundPath, 'utf8');
@@ -161,6 +190,8 @@ function loadBackgroundSandbox(storage) {
   vm.runInContext(`${source}
 this.translateImportedSubtitleCues = translateImportedSubtitleCues;
 this.findImportedSubtitleFrameId = findImportedSubtitleFrameId;
-this.sendImportedSubtitleMessage = sendImportedSubtitleMessage;`, sandbox);
+this.sendImportedSubtitleMessage = sendImportedSubtitleMessage;
+this.parseSubtitleCatSearchResults = parseSubtitleCatSearchResults;
+this.parseSubtitleCatOriginalSubtitleUrl = parseSubtitleCatOriginalSubtitleUrl;`, sandbox);
   return sandbox;
 }

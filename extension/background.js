@@ -26,6 +26,8 @@ const IMPORTED_SUBTITLE_BATCH_SIZE = 12;
 const IMPORTED_SUBTITLE_BATCH_CHAR_LIMIT = 1800;
 const IMPORTED_SUBTITLE_FRAME_DISCOVERY_TIMEOUT_MS = 2500;
 const IMPORTED_SUBTITLE_MESSAGE_TIMEOUT_MS = 2000;
+const SUBTITLE_CAT_BASE_URL = 'https://www.subtitlecat.com';
+const SUBTITLE_CAT_SEARCH_LIMIT = 8;
 
 let activeTabId = null;
 let isCapturing = false;
@@ -62,6 +64,28 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+}
+
+function stripHtmlTags(value) {
+  return decodeHtmlEntities(String(value || '').replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function absoluteSubtitleCatUrl(path) {
+  if (!path) return SUBTITLE_CAT_BASE_URL;
+  if (/^https?:\/\//i.test(path)) return path;
+  return new URL(path, `${SUBTITLE_CAT_BASE_URL}/`).toString();
+}
+
 function withTimeout(promise, timeoutMs, message) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
@@ -76,6 +100,14 @@ function withTimeout(promise, timeoutMs, message) {
       }
     );
   });
+}
+
+async function fetchText(url, options = {}) {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}) for ${url}`);
+  }
+  return response.text();
 }
 
 function emptySyncMetrics() {
@@ -426,6 +458,67 @@ async function ensureContentScript(tabId) {
     target: { tabId, allFrames: true },
     files: ['subtitle-utils.js', 'content.js']
   });
+}
+
+function parseSubtitleCatSearchResults(html) {
+  const matches = String(html || '').matchAll(
+    /<tr>\s*<td><a href="([^"]+)">([\s\S]*?)<\/a>\s*(?:\(([^)]*)\))?<\/td>\s*<td>[\s\S]*?<\/td>\s*<td[^>]*>[\s\S]*?<span class="sub-table__metric-value">([\s\S]*?)<\/span><\/td>\s*<td>([\s\S]*?)<\/td>\s*<td>([\s\S]*?)<\/td>\s*<\/tr>/gi
+  );
+  const results = [];
+  for (const match of matches) {
+    const detailPath = match[1];
+    const title = stripHtmlTags(match[2]);
+    if (!detailPath || !title) continue;
+    results.push({
+      id: detailPath,
+      title,
+      detailUrl: absoluteSubtitleCatUrl(detailPath),
+      sourceNote: stripHtmlTags(match[3] || ''),
+      size: stripHtmlTags(match[4] || ''),
+      downloads: stripHtmlTags(match[5] || ''),
+      languages: stripHtmlTags(match[6] || ''),
+      provider: 'subtitlecat',
+    });
+    if (results.length >= SUBTITLE_CAT_SEARCH_LIMIT) break;
+  }
+  return results;
+}
+
+function parseSubtitleCatOriginalSubtitleUrl(html) {
+  const match = String(html || '').match(/translate_from_server_folder\(\s*'[^']*'\s*,\s*'([^']+?-orig\.srt)'\s*,\s*'([^']+)'\s*\)/i);
+  if (!match) return null;
+  return absoluteSubtitleCatUrl(`${match[2]}${match[1]}`);
+}
+
+async function searchSubtitleCat(query) {
+  const trimmed = String(query || '').trim();
+  if (!trimmed) throw new Error('Search query is required.');
+  const url = absoluteSubtitleCatUrl(`/index.php?search=${encodeURIComponent(trimmed)}`);
+  const html = await fetchText(url);
+  return {
+    provider: 'subtitlecat',
+    query: trimmed,
+    results: parseSubtitleCatSearchResults(html),
+  };
+}
+
+async function fetchSubtitleCatSubtitle(detailUrl) {
+  const resolvedDetailUrl = absoluteSubtitleCatUrl(detailUrl);
+  const detailHtml = await fetchText(resolvedDetailUrl);
+  const originalSubtitleUrl = parseSubtitleCatOriginalSubtitleUrl(detailHtml);
+  if (!originalSubtitleUrl) {
+    throw new Error('Could not find an original subtitle file for this result.');
+  }
+  const subtitleText = await fetchText(originalSubtitleUrl);
+  const pathname = new URL(originalSubtitleUrl).pathname;
+  const fileName = pathname.split('/').pop() || 'subtitlecat-import.srt';
+  return {
+    provider: 'subtitlecat',
+    detailUrl: resolvedDetailUrl,
+    subtitleUrl: originalSubtitleUrl,
+    fileName,
+    text: subtitleText,
+  };
 }
 
 async function findImportedSubtitleFrameId(tabId) {
@@ -997,6 +1090,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             settings: msg.settings || await getActiveSettings(),
             force: !!msg.force,
           });
+          sendResponse({ ok: true, ...result });
+          break;
+        }
+        case 'subtitleSearch:search': {
+          const provider = String(msg.provider || 'subtitlecat').toLowerCase();
+          if (provider !== 'subtitlecat') throw new Error(`Unsupported subtitle provider: ${provider}`);
+          const result = await searchSubtitleCat(msg.query || '');
+          sendResponse({ ok: true, ...result });
+          break;
+        }
+        case 'subtitleSearch:load': {
+          const provider = String(msg.provider || 'subtitlecat').toLowerCase();
+          if (provider !== 'subtitlecat') throw new Error(`Unsupported subtitle provider: ${provider}`);
+          const result = await fetchSubtitleCatSubtitle(msg.detailUrl || '');
           sendResponse({ ok: true, ...result });
           break;
         }
