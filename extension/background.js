@@ -28,6 +28,7 @@ const IMPORTED_SUBTITLE_FRAME_DISCOVERY_TIMEOUT_MS = 2500;
 const IMPORTED_SUBTITLE_MESSAGE_TIMEOUT_MS = 2000;
 const SUBTITLE_CAT_BASE_URL = 'https://www.subtitlecat.com';
 const SUBTITLE_CAT_SEARCH_LIMIT = 8;
+const SUBTITLE_FETCH_TIMEOUT_MS = 10000;
 
 let activeTabId = null;
 let isCapturing = false;
@@ -103,11 +104,19 @@ function withTimeout(promise, timeoutMs, message) {
 }
 
 async function fetchText(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await withTimeout(
+    fetch(url, options),
+    SUBTITLE_FETCH_TIMEOUT_MS,
+    `Timed out while fetching ${url}`
+  );
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  return response.text();
+  return withTimeout(
+    response.text(),
+    SUBTITLE_FETCH_TIMEOUT_MS,
+    `Timed out while reading ${url}`
+  );
 }
 
 function emptySyncMetrics() {

@@ -1094,40 +1094,6 @@ button.stop .spinner {
   gap: 10px;
 }
 
-.subtitle-search-results {
-  display: grid;
-  gap: 8px;
-}
-
-.subtitle-search-empty,
-.subtitle-search-item {
-  padding: 10px 11px;
-  border: 1px solid #2a3d36;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
-}
-
-.subtitle-search-item {
-  display: grid;
-  gap: 7px;
-}
-
-.subtitle-search-item button {
-  justify-self: start;
-}
-
-.subtitle-search-item strong {
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.subtitle-search-meta {
-  color: #aab8b2;
-  font-size: 10px;
-  line-height: 1.4;
-}
-
 .usage-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

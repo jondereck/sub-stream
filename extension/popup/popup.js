@@ -59,7 +59,6 @@ const els = {
   subtitleFileMeta: $('subtitleFileMeta'),
   subtitleSearchQuery: $('subtitleSearchQuery'),
   subtitleSearchButton: $('subtitleSearchButton'),
-  subtitleSearchResults: $('subtitleSearchResults'),
   startImportedSubtitles: $('startImportedSubtitles'),
   stopImportedSubtitles: $('stopImportedSubtitles'),
   retranslateSubtitles: $('retranslateSubtitles'),
@@ -100,6 +99,7 @@ const DEFAULTS = {
 
 const IMPORTED_SUBTITLE_START_TIMEOUT_MS = 6000;
 const IMPORTED_SUBTITLE_POPUP_STATE_KEY = 'importedSubtitlePopupState';
+const SUBTITLE_CAT_BASE_URL = 'https://www.subtitlecat.com';
 
 const SUBTITLE_MODE_PROFILES = {
   fast: {
@@ -191,11 +191,6 @@ let importedSubtitleState = {
   translatedCues: [],
   cueCount: 0,
   isTranslating: false,
-};
-let subtitleSearchState = {
-  isSearching: false,
-  loadingDetailUrl: '',
-  results: [],
 };
 
 const FLAG_ASSETS = {
@@ -1258,84 +1253,19 @@ async function importSubtitleText(fileName, text) {
   await persistImportedSubtitlePopupState({ statusKind: 'ok' });
 }
 
-function renderSubtitleSearchResults() {
-  if (!els.subtitleSearchResults) return;
-  const results = subtitleSearchState.results || [];
-  if (!results.length) {
-    els.subtitleSearchResults.hidden = false;
-    els.subtitleSearchResults.innerHTML = '<div class="subtitle-search-empty">No subtitle results found.</div>';
-    return;
-  }
-  els.subtitleSearchResults.hidden = false;
-  els.subtitleSearchResults.innerHTML = results.map((result) => {
-    const meta = [
-      result.sourceNote || '',
-      result.size || '',
-      result.downloads || '',
-      result.languages || '',
-    ].filter(Boolean).join(' • ');
-    const loading = subtitleSearchState.loadingDetailUrl === result.detailUrl;
-    return `
-      <div class="subtitle-search-item">
-        <strong>${result.title}</strong>
-        <div class="subtitle-search-meta">${meta || 'Subtitle Cat result'}</div>
-        <button type="button" data-subtitle-detail-url="${result.detailUrl}" ${loading ? 'disabled' : ''}>${loading ? 'Loading...' : 'Use this subtitle'}</button>
-      </div>
-    `;
-  }).join('');
-}
-
-async function searchSubtitleSource() {
+async function openSubtitleCatSearch() {
   const query = String(els.subtitleSearchQuery && els.subtitleSearchQuery.value || '').trim();
   if (!query) {
     setImportedStatus('Enter a movie or episode name first.', 'error');
     return;
   }
-  subtitleSearchState.isSearching = true;
-  subtitleSearchState.loadingDetailUrl = '';
-  subtitleSearchState.results = [];
   if (els.subtitleSearchButton) els.subtitleSearchButton.disabled = true;
-  if (els.subtitleSearchResults) {
-    els.subtitleSearchResults.hidden = false;
-    els.subtitleSearchResults.innerHTML = '<div class="subtitle-search-empty">Searching Subtitle Cat...</div>';
-  }
   try {
-    const res = await chrome.runtime.sendMessage({
-      target: 'background',
-      type: 'subtitleSearch:search',
-      provider: 'subtitlecat',
-      query,
-    });
-    if (!res || !res.ok) throw new Error(errorMessage(res && res.error, 'Subtitle search failed.'));
-    subtitleSearchState.results = Array.isArray(res.results) ? res.results : [];
-    renderSubtitleSearchResults();
-    setImportedStatus(
-      subtitleSearchState.results.length
-        ? `Found ${subtitleSearchState.results.length} subtitle result${subtitleSearchState.results.length === 1 ? '' : 's'}.`
-        : 'No subtitle results found.',
-      subtitleSearchState.results.length ? 'ok' : 'idle'
-    );
+    const url = `${SUBTITLE_CAT_BASE_URL}/index.php?search=${encodeURIComponent(query)}`;
+    await chrome.tabs.create({ url });
+    setImportedStatus('Opened Subtitle Cat in a new tab.', 'ok');
   } finally {
-    subtitleSearchState.isSearching = false;
     if (els.subtitleSearchButton) els.subtitleSearchButton.disabled = false;
-  }
-}
-
-async function loadSubtitleSearchResult(detailUrl) {
-  subtitleSearchState.loadingDetailUrl = detailUrl;
-  renderSubtitleSearchResults();
-  try {
-    const res = await chrome.runtime.sendMessage({
-      target: 'background',
-      type: 'subtitleSearch:load',
-      provider: 'subtitlecat',
-      detailUrl,
-    });
-    if (!res || !res.ok) throw new Error(errorMessage(res && res.error, 'Subtitle import failed.'));
-    await importSubtitleText(res.fileName, res.text);
-  } finally {
-    subtitleSearchState.loadingDetailUrl = '';
-    renderSubtitleSearchResults();
   }
 }
 
@@ -1598,8 +1528,8 @@ els.subtitleFile.addEventListener('change', async () => {
 });
 if (els.subtitleSearchButton) {
   els.subtitleSearchButton.addEventListener('click', () => {
-    searchSubtitleSource().catch((e) => {
-      const message = errorMessage(e, 'Subtitle search failed.');
+    openSubtitleCatSearch().catch((e) => {
+      const message = errorMessage(e, 'Could not open Subtitle Cat.');
       setImportedStatus(message, 'error');
       showToast(message, 'error');
     });
@@ -1609,19 +1539,8 @@ if (els.subtitleSearchQuery) {
   els.subtitleSearchQuery.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    searchSubtitleSource().catch((e) => {
-      const message = errorMessage(e, 'Subtitle search failed.');
-      setImportedStatus(message, 'error');
-      showToast(message, 'error');
-    });
-  });
-}
-if (els.subtitleSearchResults) {
-  els.subtitleSearchResults.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-subtitle-detail-url]');
-    if (!button) return;
-    loadSubtitleSearchResult(button.dataset.subtitleDetailUrl).catch((e) => {
-      const message = errorMessage(e, 'Subtitle import failed.');
+    openSubtitleCatSearch().catch((e) => {
+      const message = errorMessage(e, 'Could not open Subtitle Cat.');
       setImportedStatus(message, 'error');
       showToast(message, 'error');
     });
