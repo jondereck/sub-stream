@@ -547,13 +547,17 @@ button.stop .spinner {
   font-weight: 750;
 }
 
+.text-btn-nowrap {
+  white-space: nowrap;
+}
+
 .settings {
   display: grid;
   gap: 10px;
 }
 
 .language-grid {
-  grid-template-columns: 1fr 1fr 1.18fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -767,6 +771,17 @@ button.stop .spinner {
   border-color: rgba(53, 223, 134, 0.45);
 }
 
+.imported-hero-card {
+  min-height: 112px;
+  margin-bottom: 0;
+  padding: 16px 14px;
+}
+
+.imported-wave {
+  min-width: 112px;
+  min-height: 72px;
+}
+
 .file-drop input[type="file"] {
   width: 100%;
   min-height: 38px;
@@ -811,6 +826,11 @@ button.stop .spinner {
   color: #d5dfda;
   font-size: 11px;
   line-height: 1.35;
+}
+
+.imported-status--hero {
+  margin: 0;
+  display: none;
 }
 
 .imported-timing {

@@ -3,6 +3,8 @@
 const $ = (id) => document.getElementById(id);
 
 const els = {
+  liveHeroCard: $('liveHeroCard'),
+  importedHeroCard: $('importedHeroCard'),
   toggle: $('toggle'),
   status: $('status'),
   modeStatus: $('modeStatus'),
@@ -12,13 +14,12 @@ const els = {
   usageToday: $('usageToday'),
   usageTotal: $('usageTotal'),
   usageMeta: $('usageMeta'),
+  usagePanel: $('usagePanel'),
   resetUsage: $('resetUsage'),
   sourceLang: $('sourceLang'),
   sourceLangIcon: $('sourceLangIcon'),
   targetLang: $('targetLang'),
   targetLangIcon: $('targetLangIcon'),
-  translationMode: $('translationMode'),
-  translationModeIcon: $('translationModeIcon'),
   fontSize: $('fontSize'),
   fontSizeVal: $('fontSizeVal'),
   position: $('position'),
@@ -63,8 +64,8 @@ const els = {
   importedTimingOffset: $('importedTimingOffset'),
   importedNudgeEarlier: $('importedNudgeEarlier'),
   importedNudgeLater: $('importedNudgeLater'),
-  startImportedSubtitles: $('startImportedSubtitles'),
-  stopImportedSubtitles: $('stopImportedSubtitles'),
+  importedToggle: $('importedToggle'),
+  importedWave: $('importedWave'),
   retranslateSubtitles: $('retranslateSubtitles'),
   importedSubtitleStatus: $('importedSubtitleStatus'),
   advancedToggle: $('advancedToggle'),
@@ -133,7 +134,6 @@ const LIVE_SETTINGS = new Set([
   'captionMode',
   'sourceLang',
   'targetLang',
-  'translationMode',
   'fontSize',
   'position',
   'subtitleDelayMs',
@@ -153,7 +153,6 @@ const RESTART_SETTINGS = new Set(['model', 'device']);
 const SETTING_FIELDS = [
   'sourceLang',
   'targetLang',
-  'translationMode',
   'fontSize',
   'position',
   'subtitleDelay',
@@ -190,6 +189,8 @@ let toastTimer = null;
 let saveDebounceTimer = null;
 let importedNudgeHoldTimeout = null;
 let importedNudgeHoldInterval = null;
+let importedSessionActive = false;
+let importedSessionPending = '';
 let importedSubtitleState = {
   fileName: '',
   fileHash: '',
@@ -281,10 +282,6 @@ const SELECT_LABELS = {
     vi: 'Vietnamese',
     zh: 'Chinese',
   },
-  translationMode: {
-    auto: 'Auto',
-    filipino_english: 'Fil-En',
-  },
 };
 
 function setAdvancedOpen(open, focusApiKey = false) {
@@ -305,9 +302,6 @@ function updateLanguageBadges() {
   }
   if (els.targetLangIcon) {
     renderBadge(els.targetLangIcon, badgeForValue(els.targetLang.value));
-  }
-  if (els.translationModeIcon) {
-    renderBadge(els.translationModeIcon, els.translationMode.value === 'filipino_english' ? badgeForValue('fil') : textBadge('AI'));
   }
   syncCustomSelects();
 }
@@ -344,7 +338,6 @@ function optionBadge(select, option) {
   if (select.id === 'sourceLang' || select.id === 'targetLang') {
     return badgeForValue(option.value);
   }
-  if (select.id === 'translationMode') return option.value === 'filipino_english' ? badgeForValue('fil') : textBadge('AI');
   if (select.id === 'position') return textBadge(TEXT_BADGES[option.value] || '');
   if (select.id === 'translationDisplayMode') return textBadge(TEXT_BADGES[option.value] || '');
   if (select.id === 'syncMode') return textBadge(option.value === 'manual' ? 'M' : 'A');
@@ -504,6 +497,9 @@ function syncCaptionModeButtons() {
     button.setAttribute('aria-pressed', String(active));
   });
   if (els.importedSubtitleCard) els.importedSubtitleCard.hidden = mode !== 'imported';
+  if (els.usagePanel) els.usagePanel.hidden = mode === 'imported';
+  if (els.liveHeroCard) els.liveHeroCard.hidden = mode === 'imported';
+  if (els.importedHeroCard) els.importedHeroCard.hidden = mode !== 'imported';
   if (els.toggle) {
     els.toggle.style.display = mode === 'imported' ? 'none' : '';
   }
@@ -728,7 +724,6 @@ async function loadSettings() {
   s.settingsVersion = DEFAULTS.settingsVersion;
   els.sourceLang.value = s.sourceLang;
   els.targetLang.value = s.targetLang;
-  els.translationMode.value = s.translationMode;
   els.fontSize.value = s.fontSize;
   els.fontSizeVal.textContent = s.fontSize;
   els.position.value = s.position;
@@ -767,7 +762,7 @@ function readSettingsFromForm() {
     captionMode: currentSettings && currentSettings.captionMode === 'imported' ? 'imported' : 'live',
     sourceLang: els.sourceLang.value,
     targetLang: els.targetLang.value,
-    translationMode: normalizeTranslationMode(els.translationMode.value),
+    translationMode: DEFAULTS.translationMode,
     fontSize: parseInt(els.fontSize.value, 10),
     position: els.position.value,
     subtitleDelayMs: clampSubtitleDelayMs(els.subtitleDelay.value),
@@ -983,6 +978,7 @@ async function refresh() {
   updateUsage(res.aiUsage);
   updateSyncMetrics(res.sync);
   renderSessionState(res);
+  await refreshImportedSessionState();
 }
 
 function backendHttpBase() {
@@ -1154,6 +1150,23 @@ function importedCueCount() {
   return importedSubtitleState.cues.length || Number(importedSubtitleState.cueCount) || 0;
 }
 
+function hasImportedCueData() {
+  return importedSubtitleState.cues.length > 0;
+}
+
+function cloneImportedCues(cues) {
+  return Array.isArray(cues)
+    ? cues
+        .filter((cue) => cue && typeof cue === 'object')
+        .map((cue) => ({
+          startMs: Number(cue.startMs) || 0,
+          endMs: Number(cue.endMs) || 0,
+          originalText: String(cue.originalText || ''),
+          translatedText: cue.translatedText == null ? '' : String(cue.translatedText),
+        }))
+    : [];
+}
+
 async function persistImportedSubtitlePopupState(extra = {}) {
   const currentTabId = await activeTabId().catch(() => null);
   await chrome.storage.local.set({
@@ -1161,6 +1174,8 @@ async function persistImportedSubtitlePopupState(extra = {}) {
       fileName: importedSubtitleState.fileName || '',
       fileHash: importedSubtitleState.fileHash || '',
       cueCount: importedCueCount(),
+      cues: cloneImportedCues(importedSubtitleState.cues),
+      translatedCues: cloneImportedCues(importedSubtitleState.translatedCues),
       status: els.importedSubtitleStatus ? els.importedSubtitleStatus.textContent : '',
       statusKind: extra.statusKind || '',
       tabId: currentTabId,
@@ -1184,9 +1199,9 @@ async function restoreImportedSubtitlePopupState() {
     ...importedSubtitleState,
     fileName: String(session.fileName || ''),
     fileHash: String(session.fileHash || ''),
-    cues: [],
-    translatedCues: [],
-    cueCount: Number(session.cueCount) || 0,
+    cues: cloneImportedCues(session.cues),
+    translatedCues: cloneImportedCues(session.translatedCues),
+    cueCount: Number(session.cueCount) || cloneImportedCues(session.cues).length || 0,
     isTranslating: false,
   };
 
@@ -1200,25 +1215,67 @@ async function restoreImportedSubtitlePopupState() {
     currentTabId != null &&
     Number(stored.importedSubtitlesTabId) === Number(currentTabId)
   );
+  importedSessionActive = isSameTabActive;
   const status = isSameTabActive
     ? 'Imported subtitles are already loaded in this tab.'
-    : (session.status || 'Imported subtitle file was loaded previously.');
-  setImportedStatus(status, isSameTabActive ? 'ok' : (session.statusKind || 'idle'));
+    : (
+      importedSubtitleState.cues.length
+        ? (session.status || 'Imported subtitle file is ready to sync again.')
+        : 'Imported subtitle file was loaded previously. Re-import it to sync again.'
+    );
+  setImportedStatus(status, isSameTabActive ? 'ok' : (session.statusKind || (importedSubtitleState.cues.length ? 'ok' : 'idle')));
   setImportedControls();
 }
 
 function setImportedStatus(message, kind = 'idle') {
   if (!els.importedSubtitleStatus) return;
   els.importedSubtitleStatus.textContent = message;
-  els.importedSubtitleStatus.className = `imported-status ${kind}`;
+  els.importedSubtitleStatus.className = `imported-status imported-status--hero ${kind}`;
+}
+
+function setImportedWaveState(state, level = 0.18) {
+  if (!els.importedWave) return;
+  const safeLevel = Math.max(0.12, Math.min(1, Number(level) || 0.18));
+  els.importedWave.className = `wave imported-wave ${state}`;
+  els.importedWave.style.setProperty('--wave-level', safeLevel.toFixed(2));
+}
+
+function renderImportedToggleButton(text, stopMode = false, disabled = false, loading = false) {
+  if (!els.importedToggle) return;
+  els.importedToggle.disabled = disabled;
+  els.importedToggle.classList.toggle('stop', stopMode);
+  els.importedToggle.innerHTML = loading
+    ? `<span class="spinner" aria-hidden="true"></span>${text}`
+    : `${stopMode ? STOP_ICON : PLAY_ICON}<span>${text}</span>`;
 }
 
 function setImportedControls() {
-  const hasCues = importedSubtitleState.cues.length > 0;
+  const hasCues = hasImportedCueData();
   const busy = importedSubtitleState.isTranslating;
-  if (els.startImportedSubtitles) els.startImportedSubtitles.disabled = !hasCues || busy;
-  if (els.retranslateSubtitles) els.retranslateSubtitles.disabled = !hasCues || busy;
-  if (els.stopImportedSubtitles) els.stopImportedSubtitles.disabled = false;
+  const pending = importedSessionPending === 'starting' || importedSessionPending === 'stopping';
+  if (pending) {
+    const stopping = importedSessionPending === 'stopping';
+    renderImportedToggleButton(stopping ? 'Stopping...' : 'Starting...', stopping, true, true);
+    setImportedWaveState('starting', 0.3);
+  } else if (importedSessionActive) {
+    renderImportedToggleButton('Stop Imported Sync', true, !hasCues || busy, false);
+    setImportedWaveState('live', 0.72);
+  } else {
+    renderImportedToggleButton('Start Imported Sync', false, !hasCues || busy, false);
+    setImportedWaveState(hasCues ? 'idle' : 'error', hasCues ? 0.18 : 0.16);
+  }
+  if (els.retranslateSubtitles) els.retranslateSubtitles.disabled = !hasCues || busy || pending;
+}
+
+async function refreshImportedSessionState() {
+  const currentTabId = await activeTabId().catch(() => null);
+  const stored = await chrome.storage.local.get(['importedSubtitlesActive', 'importedSubtitlesTabId']);
+  importedSessionActive = !!(
+    stored.importedSubtitlesActive &&
+    currentTabId != null &&
+    Number(stored.importedSubtitlesTabId) === Number(currentTabId)
+  );
+  setImportedControls();
 }
 
 async function activeTabId() {
@@ -1384,52 +1441,70 @@ async function startImportedSubtitles(forceTranslate = false) {
   }
   const settings = await saveSettings();
   const tabId = await activeTabId();
+  importedSessionPending = 'starting';
   setImportedControls();
   setImportedStatus('Mounting subtitle overlay...');
-  const startRes = await sendRuntimeMessageWithTimeout(
-    {
-      target: 'background',
-      type: 'importedSubtitles:start',
-      tabId,
-      cues: importedSubtitleState.translatedCues.length ? importedSubtitleState.translatedCues : importedSubtitleState.cues,
-      settings,
-    },
-    IMPORTED_SUBTITLE_START_TIMEOUT_MS,
-    'Subtitle overlay mount timed out. Reload the page and try again.'
-  );
-  if (!startRes || !startRes.ok) {
-    const message = errorMessage(startRes && startRes.error, 'Could not start imported subtitles.');
-    setImportedStatus(message, 'error');
-    showToast(message, 'error');
-    return;
-  }
-
-  setImportedStatus('Imported subtitles are syncing to video time.');
-  await persistImportedSubtitlePopupState({ statusKind: 'ok', tabId });
   try {
-    const cues = await translateImportedSubtitles(forceTranslate);
-    await chrome.runtime.sendMessage({
-      target: 'background',
-      type: 'importedSubtitles:update',
-      tabId,
-      cues,
-      settings: readSettingsFromForm(),
-    });
-  } catch (e) {
-    const message = errorMessage(e, 'Translation failed. Showing original subtitles.');
-    setImportedStatus(message, 'error');
-    showToast(message, 'error');
+    const startRes = await sendRuntimeMessageWithTimeout(
+      {
+        target: 'background',
+        type: 'importedSubtitles:start',
+        tabId,
+        cues: importedSubtitleState.translatedCues.length ? importedSubtitleState.translatedCues : importedSubtitleState.cues,
+        settings,
+      },
+      IMPORTED_SUBTITLE_START_TIMEOUT_MS,
+      'Subtitle overlay mount timed out. Reload the page and try again.'
+    );
+    if (!startRes || !startRes.ok) {
+      const message = errorMessage(startRes && startRes.error, 'Could not start imported subtitles.');
+      setImportedStatus(message, 'error');
+      showToast(message, 'error');
+      return;
+    }
+
+    importedSessionActive = true;
+    setImportedStatus('Imported subtitles are syncing to video time.');
+    await persistImportedSubtitlePopupState({ statusKind: 'ok', tabId });
+    try {
+      const cues = await translateImportedSubtitles(forceTranslate);
+      await chrome.runtime.sendMessage({
+        target: 'background',
+        type: 'importedSubtitles:update',
+        tabId,
+        cues,
+        settings: readSettingsFromForm(),
+      });
+    } catch (e) {
+      const message = isBackendOfflineError(e)
+        ? 'Translation backend is offline. Showing original imported subtitles.'
+        : 'Translation failed. Showing original imported subtitles.';
+      importedSubtitleState.translatedCues = importedSubtitleState.cues;
+      setImportedStatus(message, 'ok');
+      showToast(message, isBackendOfflineError(e) ? 'warn' : 'error');
+      await persistImportedSubtitlePopupState({ statusKind: 'ok', tabId });
+    }
+  } finally {
+    importedSessionPending = '';
+    setImportedControls();
   }
 }
 
 async function stopImportedSubtitles() {
   try {
     const tabId = await activeTabId();
+    importedSessionPending = 'stopping';
+    setImportedControls();
     await chrome.runtime.sendMessage({ target: 'background', type: 'importedSubtitles:stop', tabId });
+    importedSessionActive = false;
     setImportedStatus(importedCueCount() ? 'Imported subtitle sync stopped.' : 'No subtitle file loaded.');
+    setImportedControls();
     await persistImportedSubtitlePopupState({ statusKind: 'idle', tabId });
   } catch (e) {
     showToast(errorMessage(e, 'Failed to stop imported subtitles.'), 'error');
+  } finally {
+    importedSessionPending = '';
+    setImportedControls();
   }
 }
 
@@ -1549,9 +1624,6 @@ captionModeButtons.forEach((button) => {
     currentSettings = { ...(currentSettings || DEFAULTS), captionMode: mode };
     syncCaptionModeButtons();
     saveAndBroadcastSettings({ restartRequired: false, force: true }).catch(() => {});
-    if (mode === 'imported') {
-      setImportedStatus(importedCueCount() ? 'Ready to sync imported subtitles.' : 'Import a subtitle file to begin.');
-    }
   });
 });
 els.realtimeLatency.addEventListener('change', () => {
@@ -1567,7 +1639,7 @@ els.realtimeLatency.addEventListener('change', () => {
 els.partialEmitEnabled.addEventListener('change', () => {
   saveAndBroadcastSettings({ restartRequired: false }).catch(() => {});
 });
-['sourceLang', 'targetLang', 'translationMode'].forEach((key) => {
+['sourceLang', 'targetLang'].forEach((key) => {
   els[key].addEventListener('change', () => {
     updateLanguageBadges();
     if (importedSubtitleState.cues.length) {
@@ -1646,9 +1718,10 @@ if (els.subtitleSearchQuery) {
 }
 bindImportedNudgeButton(els.importedNudgeEarlier, -100);
 bindImportedNudgeButton(els.importedNudgeLater, 100);
-els.startImportedSubtitles.addEventListener('click', () => {
-  startImportedSubtitles(false).catch((e) => {
-    const message = errorMessage(e, 'Failed to start imported subtitles.');
+els.importedToggle.addEventListener('click', () => {
+  const action = importedSessionActive ? stopImportedSubtitles() : startImportedSubtitles(false);
+  action.catch((e) => {
+    const message = errorMessage(e, importedSessionActive ? 'Failed to stop imported subtitles.' : 'Failed to start imported subtitles.');
     setImportedStatus(message, 'error');
     showToast(message, 'error');
   });
@@ -1660,7 +1733,6 @@ els.retranslateSubtitles.addEventListener('click', () => {
     showToast(message, 'error');
   });
 });
-els.stopImportedSubtitles.addEventListener('click', stopImportedSubtitles);
 
 enhanceSelects();
 

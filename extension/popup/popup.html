@@ -17,7 +17,7 @@
           <div id="status" class="status idle">Ready</div>
         </header>
 
-        <section class="hero-card">
+        <section id="liveHeroCard" class="hero-card">
           <div class="hero-copy">
             <button id="toggle" class="primary" type="button">
               <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5-13-7.5Z" fill="currentColor"></path></svg>
@@ -25,6 +25,19 @@
             </button>
           </div>
           <div id="audioWave" class="wave idle" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+        </section>
+
+        <section id="importedHeroCard" class="hero-card imported-hero-card" hidden>
+          <div class="hero-copy imported-hero-copy">
+            <button id="importedToggle" class="primary" type="button" disabled>
+              <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5v15l13-7.5-13-7.5Z" fill="currentColor"></path></svg>
+              <span>Start Imported Sync</span>
+            </button>
+            <p id="importedSubtitleStatus" class="imported-status imported-status--hero">No subtitle file loaded.</p>
+          </div>
+          <div id="importedWave" class="wave imported-wave idle" aria-hidden="true">
             <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
           </div>
         </section>
@@ -104,16 +117,6 @@
               </span>
             </label>
 
-            <label>
-              Mode
-              <span class="select-shell">
-                <span id="translationModeIcon" class="select-icon select-icon-spark" aria-hidden="true">*</span>
-                <select id="translationMode">
-                  <option value="auto" selected>Auto-detect best</option>
-                  <option value="filipino_english">Filipino-English</option>
-                </select>
-              </span>
-            </label>
           </div>
         </section>
 
@@ -123,7 +126,7 @@
               <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg></span>
               <h2>Imported Subtitle Sync</h2>
             </div>
-            <button id="retranslateSubtitles" class="text-btn" type="button" disabled>Re-translate</button>
+            <button id="retranslateSubtitles" class="text-btn text-btn-nowrap" type="button" disabled>Re-translate</button>
           </div>
           <div class="settings">
             <div class="subtitle-search-panel">
@@ -152,15 +155,10 @@
               </div>
               <span class="field-help">Uses the same effective offset as live subtitles. Fine-tune while the video is playing.</span>
             </div>
-            <div class="imported-actions">
-              <button id="startImportedSubtitles" type="button" disabled>Start Imported Sync</button>
-              <button id="stopImportedSubtitles" type="button" disabled>Stop</button>
-            </div>
-            <p id="importedSubtitleStatus" class="imported-status">No subtitle file loaded.</p>
           </div>
         </section>
 
-        <section class="card usage-panel">
+        <section id="usagePanel" class="card usage-panel">
           <div class="section-title row-between">
             <div>
               <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><line x1="12" x2="12" y1="2" y2="22"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"></path></svg></span>
