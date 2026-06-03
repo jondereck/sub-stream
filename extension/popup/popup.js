@@ -59,6 +59,7 @@ const els = {
   importedSubtitleCard: $('importedSubtitleCard'),
   subtitleFile: $('subtitleFile'),
   subtitleFileMeta: $('subtitleFileMeta'),
+  subtitleSearchSource: $('subtitleSearchSource'),
   subtitleSearchQuery: $('subtitleSearchQuery'),
   subtitleSearchButton: $('subtitleSearchButton'),
   importedTimingOffset: $('importedTimingOffset'),
@@ -104,7 +105,37 @@ const DEFAULTS = {
 
 const IMPORTED_SUBTITLE_START_TIMEOUT_MS = 6000;
 const IMPORTED_SUBTITLE_POPUP_STATE_KEY = 'importedSubtitlePopupState';
-const SUBTITLE_CAT_BASE_URL = 'https://www.subtitlecat.com';
+
+const SUBTITLE_SEARCH_SOURCES = {
+  subtitlecat: {
+    label: 'Subtitle Cat',
+    url: (query) => `https://www.subtitlecat.com/index.php?search=${encodeURIComponent(query)}`,
+  },
+  subsource: {
+    label: 'SubSource',
+    url: (query) => `https://subsource.net/search/${encodeURIComponent(query)}`,
+  },
+  opensubtitles: {
+    label: 'OpenSubtitles',
+    url: (query) => `https://www.opensubtitles.com/en/search2/sublanguageid-all/moviename-${encodeURIComponent(query)}`,
+  },
+  subdl: {
+    label: 'SubDL',
+    url: (query) => `https://subdl.com/search/${encodeURIComponent(query)}`,
+  },
+  tvsubtitles: {
+    label: 'TVSubtitles',
+    url: (query) => `https://www.tvsubtitles.net/search.php?q=${encodeURIComponent(query)}`,
+  },
+  yify: {
+    label: 'YIFY',
+    url: (query) => `https://yifysubtitles.ch/search?q=${encodeURIComponent(query)}`,
+  },
+  downsub: {
+    label: 'DownSub',
+    url: (query) => `https://downsub.com/?url=${encodeURIComponent(query)}`,
+  },
+};
 
 const SUBTITLE_MODE_PROFILES = {
   fast: {
@@ -1331,17 +1362,22 @@ async function importSubtitleText(fileName, text) {
   await persistImportedSubtitlePopupState({ statusKind: 'ok' });
 }
 
-async function openSubtitleCatSearch() {
+function selectedSubtitleSearchSource() {
+  const key = String((els.subtitleSearchSource && els.subtitleSearchSource.value) || 'subtitlecat');
+  return SUBTITLE_SEARCH_SOURCES[key] || SUBTITLE_SEARCH_SOURCES.subtitlecat;
+}
+
+async function openSubtitleSourceSearch() {
   const query = String(els.subtitleSearchQuery && els.subtitleSearchQuery.value || '').trim();
   if (!query) {
     setImportedStatus('Enter a movie or episode name first.', 'error');
     return;
   }
+  const source = selectedSubtitleSearchSource();
   if (els.subtitleSearchButton) els.subtitleSearchButton.disabled = true;
   try {
-    const url = `${SUBTITLE_CAT_BASE_URL}/index.php?search=${encodeURIComponent(query)}`;
-    await chrome.tabs.create({ url });
-    setImportedStatus('Opened Subtitle Cat in a new tab.', 'ok');
+    await chrome.tabs.create({ url: source.url(query) });
+    setImportedStatus(`Opened ${source.label} in a new tab.`, 'ok');
   } finally {
     if (els.subtitleSearchButton) els.subtitleSearchButton.disabled = false;
   }
@@ -1698,8 +1734,8 @@ els.subtitleFile.addEventListener('change', async () => {
 });
 if (els.subtitleSearchButton) {
   els.subtitleSearchButton.addEventListener('click', () => {
-    openSubtitleCatSearch().catch((e) => {
-      const message = errorMessage(e, 'Could not open Subtitle Cat.');
+    openSubtitleSourceSearch().catch((e) => {
+      const message = errorMessage(e, 'Could not open subtitle source.');
       setImportedStatus(message, 'error');
       showToast(message, 'error');
     });
@@ -1709,8 +1745,8 @@ if (els.subtitleSearchQuery) {
   els.subtitleSearchQuery.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    openSubtitleCatSearch().catch((e) => {
-      const message = errorMessage(e, 'Could not open Subtitle Cat.');
+    openSubtitleSourceSearch().catch((e) => {
+      const message = errorMessage(e, 'Could not open subtitle source.');
       setImportedStatus(message, 'error');
       showToast(message, 'error');
     });

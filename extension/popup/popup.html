@@ -133,10 +133,19 @@
               <label class="field-stack">
                 Find subtitle
                 <div class="search-row">
+                  <select id="subtitleSearchSource" aria-label="Subtitle source">
+                    <option value="subtitlecat" selected>Subtitle Cat</option>
+                    <option value="subsource">SubSource</option>
+                    <option value="opensubtitles">OpenSubtitles</option>
+                    <option value="subdl">SubDL</option>
+                    <option value="tvsubtitles">TVSubtitles</option>
+                    <option value="yify">YIFY</option>
+                    <option value="downsub">DownSub</option>
+                  </select>
                   <input id="subtitleSearchQuery" class="text-input" type="text" placeholder="Movie or episode name" />
                   <button id="subtitleSearchButton" type="button">Find</button>
                 </div>
-                <span class="field-help">Open Subtitle Cat in a new tab using this query, then download the subtitle there and import it here.</span>
+                <span class="field-help">Open the selected subtitle source in a new tab, then download the subtitle there and import it here.</span>
               </label>
             </div>
             <label class="file-drop">

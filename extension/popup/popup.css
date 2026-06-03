@@ -1125,8 +1125,12 @@ button.stop .spinner {
 
 .search-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 118px minmax(0, 1fr) auto;
   gap: 8px;
+}
+
+.search-row select {
+  min-height: 42px;
 }
 
 .text-input {
